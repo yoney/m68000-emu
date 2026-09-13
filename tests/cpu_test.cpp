@@ -1,11 +1,10 @@
-#include <gtest/gtest.h>
-
-#include <cstdint>
-#include <map>
-#include <vector>
-
 #include "m68000/bus.hpp"
 #include "m68000/cpu.hpp"
+
+#include <cstdint>
+#include <gtest/gtest.h>
+#include <map>
+#include <vector>
 
 namespace {
 
@@ -52,14 +51,12 @@ public:
 
 } // namespace
 
-TEST(CpuTest, CanBeConstructed)
-{
+TEST(CpuTest, CanBeConstructed) {
     [[maybe_unused]] m68000::Cpu cpu;
     SUCCEED();
 }
 
-TEST(CpuTest, ResetReadsVectorTableInCorrectOrder)
-{
+TEST(CpuTest, ResetReadsVectorTableInCorrectOrder) {
     FakeBus bus;
     m68000::Cpu cpu;
 
@@ -83,8 +80,7 @@ TEST(CpuTest, ResetReadsVectorTableInCorrectOrder)
     EXPECT_EQ(bus.reads[3].address, 0x000006U);
 }
 
-TEST(CpuTest, ResetDoesNotPerformAnyBusWrites)
-{
+TEST(CpuTest, ResetDoesNotPerformAnyBusWrites) {
     FakeBus bus;
     m68000::Cpu cpu;
 
@@ -93,8 +89,7 @@ TEST(CpuTest, ResetDoesNotPerformAnyBusWrites)
     EXPECT_TRUE(bus.writes.empty());
 }
 
-TEST(CpuTest, ResetSetsRegistersToLoadedValues)
-{
+TEST(CpuTest, ResetSetsRegistersToLoadedValues) {
     FakeBus bus;
     // Initial SSP: 0x00204000
     bus.memory16[0x000000U] = 0x0020U;
@@ -112,8 +107,7 @@ TEST(CpuTest, ResetSetsRegistersToLoadedValues)
     EXPECT_EQ(cpu.status(), 0x2700U);
 }
 
-TEST(CpuTest, ResetHandlesFull32BitRangeWithoutSignExtension)
-{
+TEST(CpuTest, ResetHandlesFull32BitRangeWithoutSignExtension) {
     FakeBus bus;
     // Test high bit patterns across words
     bus.memory16[0x000000U] = 0xFFFFU;
