@@ -121,3 +121,67 @@ TEST(CpuTest, ResetHandlesFull32BitRangeWithoutSignExtension) {
     EXPECT_EQ(cpu.A(7), 0xFFFFFFFFU);
     EXPECT_EQ(cpu.pc(), 0x80000001U);
 }
+
+TEST(CpuTest, StepExecutesNopAndIncrementsPc) {
+    FakeBus bus;
+    bus.memory16[0x000000U] = 0x0020U;
+    bus.memory16[0x000002U] = 0x0000U;
+    bus.memory16[0x000004U] = 0x0000U;
+    bus.memory16[0x000006U] = 0x1000U;
+
+    // NOP opcode: 0x4E71
+    bus.memory16[0x00001000U] = 0x4E71U;
+
+    m68000::Cpu cpu;
+    cpu.reset(bus);
+
+    const auto pre_reads = bus.reads.size();
+    const auto initial_status = cpu.status();
+    const auto initial_sp = cpu.A(7);
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), 0x00001002U);
+    EXPECT_EQ(cpu.status(), initial_status);
+    EXPECT_EQ(cpu.A(7), initial_sp);
+    EXPECT_EQ(bus.reads.size(), pre_reads + 1U);
+    EXPECT_EQ(bus.reads.back().address, 0x00001000U);
+    EXPECT_EQ(bus.reads.back().size, 16U);
+    EXPECT_TRUE(bus.writes.empty());
+}
+
+TEST(CpuTest, StepExecutesMultipleNopsSequentially) {
+    FakeBus bus;
+    bus.memory16[0x000000U] = 0x0020U;
+    bus.memory16[0x000002U] = 0x0000U;
+    bus.memory16[0x000004U] = 0x0000U;
+    bus.memory16[0x000006U] = 0x1000U;
+
+    bus.memory16[0x00001000U] = 0x4E71U;
+    bus.memory16[0x00001002U] = 0x4E71U;
+
+    m68000::Cpu cpu;
+    cpu.reset(bus);
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.pc(), 0x00001002U);
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.pc(), 0x00001004U);
+}
+
+TEST(CpuTest, StepThrowsOnUnsupportedInstruction) {
+    FakeBus bus;
+    bus.memory16[0x000000U] = 0x0020U;
+    bus.memory16[0x000002U] = 0x0000U;
+    bus.memory16[0x000004U] = 0x0000U;
+    bus.memory16[0x000006U] = 0x1000U;
+
+    // Arbitrary unhandled opcode
+    bus.memory16[0x00001000U] = 0x1234U;
+
+    m68000::Cpu cpu;
+    cpu.reset(bus);
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
