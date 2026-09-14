@@ -9,6 +9,15 @@ namespace m68000 {
 
 class Bus;
 
+constexpr std::uint16_t carry_flag = 1U << 0;
+constexpr std::uint16_t overflow_flag = 1U << 1;
+constexpr std::uint16_t zero_flag = 1U << 2;
+constexpr std::uint16_t negative_flag = 1U << 3;
+constexpr std::uint16_t extend_flag = 1U << 4;
+
+constexpr std::uint16_t nzvc_flags =
+    negative_flag | zero_flag | overflow_flag | carry_flag;
+
 class Cpu {
 public:
     Cpu() = default;

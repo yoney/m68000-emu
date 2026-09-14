@@ -79,27 +79,27 @@ protected:
     }
 
     [[nodiscard]] bool flag_c() const noexcept {
-        return (cpu.status() & 0x0001U) != 0;
+        return (cpu.status() & m68000::carry_flag) != 0;
     }
 
     [[nodiscard]] bool flag_v() const noexcept {
-        return (cpu.status() & 0x0002U) != 0;
+        return (cpu.status() & m68000::overflow_flag) != 0;
     }
 
     [[nodiscard]] bool flag_z() const noexcept {
-        return (cpu.status() & 0x0004U) != 0;
+        return (cpu.status() & m68000::zero_flag) != 0;
     }
 
     [[nodiscard]] bool flag_n() const noexcept {
-        return (cpu.status() & 0x0008U) != 0;
+        return (cpu.status() & m68000::negative_flag) != 0;
     }
 
     [[nodiscard]] bool flag_x() const noexcept {
-        return (cpu.status() & 0x0010U) != 0;
+        return (cpu.status() & m68000::extend_flag) != 0;
     }
 
     [[nodiscard]] std::uint16_t flags_nzvc() const noexcept {
-        return static_cast<std::uint16_t>(cpu.status() & 0x000FU);
+        return static_cast<std::uint16_t>(cpu.status() & m68000::nzvc_flags);
     }
 };
 
@@ -237,6 +237,32 @@ TEST_F(CpuTest, MoveqSetsZeroFlagWhenImmediateIsZero) {
     EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
     EXPECT_TRUE(flag_z());
     EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, MoveqSignExtendsMinimumImmediate) {
+    load_program({0x7080U}); // MOVEQ #-128, D0
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0xFFFFFF80U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, MoveqLoadsMaximumPositiveImmediate) {
+    load_program({0x707FU}); // MOVEQ #127, D0
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0x0000007FU);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_z());
     EXPECT_FALSE(flag_v());
     EXPECT_FALSE(flag_c());
 }

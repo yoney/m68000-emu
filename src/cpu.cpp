@@ -71,12 +71,12 @@ void Cpu::step(Bus &bus) {
     } else if ((instr & moveq_mask) == moveq_pattern) {
         std::size_t index{(instr >> 9) & 0x0007U};
         std::int32_t immediate{static_cast<std::int8_t>(instr & 0x00FFU)};
-        D_[index] = static_cast<uint32_t>(immediate);
-        status_ &= 0xFFF0U;
+        D_[index] = static_cast<std::uint32_t>(immediate);
+        status_ &= static_cast<std::uint16_t>(~nzvc_flags);
         if (immediate == 0) {
-            status_ |= 0x0004U;
+            status_ |= zero_flag;
         } else if (immediate < 0) {
-            status_ |= 0x0008;
+            status_ |= negative_flag;
         }
         return;
     }
