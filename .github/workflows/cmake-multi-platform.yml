@@ -26,6 +26,10 @@ jobs:
             os: ubuntu-latest
             cpp_compiler: clang++
 
+          - name: macOS Apple Clang
+            os: macos-latest
+            cpp_compiler: clang++
+
           - name: Windows MSVC
             os: windows-latest
             cpp_compiler: cl
