@@ -24,14 +24,22 @@ target_include_directories(m68000
 
 target_compile_features(m68000 PUBLIC cxx_std_20)
 
-target_compile_options(m68000 PRIVATE
-    -Wall
-    -Wextra
-    -Wpedantic
-    -Wconversion
-    -Wsign-conversion
-    -Werror
-)
+if(MSVC)
+    target_compile_options(m68000 PRIVATE
+        /W4
+        /WX
+        /permissive-
+    )
+else()
+    target_compile_options(m68000 PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+        -Wconversion
+        -Wsign-conversion
+        -Werror
+    )
+endif()
 
 include(CTest)
 if(BUILD_TESTING)
