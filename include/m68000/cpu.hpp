@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <format>
 #include <stdexcept>
 
 namespace m68000 {
@@ -33,7 +34,7 @@ private:
 
 struct UnsupportedInstruction : public std::runtime_error {
     UnsupportedInstruction(std::uint16_t instr)
-        : std::runtime_error{std::to_string(instr)} {}
+        : std::runtime_error{std::format("0x{:04X}", instr)} {}
 };
 
 } // namespace m68000

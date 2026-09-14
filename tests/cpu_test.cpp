@@ -185,3 +185,66 @@ TEST(CpuTest, StepThrowsOnUnsupportedInstruction) {
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
+
+TEST(CpuTest, MoveqLoadsPositiveImmediateAndClearsFlags) {
+    FakeBus bus;
+    bus.memory16[0x000000U] = 0x0020U;
+    bus.memory16[0x000002U] = 0x0000U;
+    bus.memory16[0x000004U] = 0x0000U;
+    bus.memory16[0x000006U] = 0x1000U;
+
+    // MOVEQ #42, D3 -> 0x762A
+    bus.memory16[0x00001000U] = 0x762AU;
+
+    m68000::Cpu cpu;
+    cpu.reset(bus);
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(3), 42U);
+    EXPECT_EQ(cpu.pc(), 0x00001002U);
+    // N=0, Z=0, V=0, C=0 (bits 3..0 of status should be 0)
+    EXPECT_EQ(cpu.status() & 0x000FU, 0x0000U);
+}
+
+TEST(CpuTest, MoveqSignExtendsNegativeImmediateAndSetsNegativeFlag) {
+    FakeBus bus;
+    bus.memory16[0x000000U] = 0x0020U;
+    bus.memory16[0x000002U] = 0x0000U;
+    bus.memory16[0x000004U] = 0x0000U;
+    bus.memory16[0x000006U] = 0x1000U;
+
+    // MOVEQ #-1, D0 -> 0x70FF (0xFF sign-extended to 32 bits is 0xFFFFFFFF)
+    bus.memory16[0x00001000U] = 0x70FFU;
+
+    m68000::Cpu cpu;
+    cpu.reset(bus);
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0xFFFFFFFFU);
+    EXPECT_EQ(cpu.pc(), 0x00001002U);
+    // N flag is bit 3 (0x0008), Z=0, V=0, C=0
+    EXPECT_EQ(cpu.status() & 0x000FU, 0x0008U);
+}
+
+TEST(CpuTest, MoveqSetsZeroFlagWhenImmediateIsZero) {
+    FakeBus bus;
+    bus.memory16[0x000000U] = 0x0020U;
+    bus.memory16[0x000002U] = 0x0000U;
+    bus.memory16[0x000004U] = 0x0000U;
+    bus.memory16[0x000006U] = 0x1000U;
+
+    // MOVEQ #0, D5 -> 0x7A00
+    bus.memory16[0x00001000U] = 0x7A00U;
+
+    m68000::Cpu cpu;
+    cpu.reset(bus);
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(5), 0U);
+    EXPECT_EQ(cpu.pc(), 0x00001002U);
+    // Z flag is bit 2 (0x0004), N=0, V=0, C=0
+    EXPECT_EQ(cpu.status() & 0x000FU, 0x0004U);
+}
