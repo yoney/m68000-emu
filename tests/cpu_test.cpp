@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <gtest/gtest.h>
+#include <initializer_list>
 #include <map>
 #include <vector>
 
@@ -49,14 +50,67 @@ public:
     }
 };
 
+class CpuTest : public ::testing::Test {
+protected:
+    static constexpr std::uint32_t kDefaultPc = 0x00001000U;
+    static constexpr std::uint32_t kDefaultSp = 0x00200000U;
+
+    FakeBus bus;
+    m68000::Cpu cpu;
+
+    void SetUp() override {
+        bus.memory16[0x000000U] = static_cast<std::uint16_t>(kDefaultSp >> 16);
+        bus.memory16[0x000002U] =
+            static_cast<std::uint16_t>(kDefaultSp & 0xFFFFU);
+        bus.memory16[0x000004U] = static_cast<std::uint16_t>(kDefaultPc >> 16);
+        bus.memory16[0x000006U] =
+            static_cast<std::uint16_t>(kDefaultPc & 0xFFFFU);
+        cpu.reset(bus);
+        bus.reads.clear();
+        bus.writes.clear();
+    }
+
+    void load_program(std::initializer_list<std::uint16_t> opcodes,
+                      std::uint32_t address = kDefaultPc) {
+        for (std::uint16_t op : opcodes) {
+            bus.memory16[address] = op;
+            address += 2U;
+        }
+    }
+
+    [[nodiscard]] bool flag_c() const noexcept {
+        return (cpu.status() & 0x0001U) != 0;
+    }
+
+    [[nodiscard]] bool flag_v() const noexcept {
+        return (cpu.status() & 0x0002U) != 0;
+    }
+
+    [[nodiscard]] bool flag_z() const noexcept {
+        return (cpu.status() & 0x0004U) != 0;
+    }
+
+    [[nodiscard]] bool flag_n() const noexcept {
+        return (cpu.status() & 0x0008U) != 0;
+    }
+
+    [[nodiscard]] bool flag_x() const noexcept {
+        return (cpu.status() & 0x0010U) != 0;
+    }
+
+    [[nodiscard]] std::uint16_t flags_nzvc() const noexcept {
+        return static_cast<std::uint16_t>(cpu.status() & 0x000FU);
+    }
+};
+
 } // namespace
 
-TEST(CpuTest, CanBeConstructed) {
+TEST(CpuResetTest, CanBeConstructed) {
     [[maybe_unused]] m68000::Cpu cpu;
     SUCCEED();
 }
 
-TEST(CpuTest, ResetReadsVectorTableInCorrectOrder) {
+TEST(CpuResetTest, ResetReadsVectorTableInCorrectOrder) {
     FakeBus bus;
     m68000::Cpu cpu;
 
@@ -80,7 +134,7 @@ TEST(CpuTest, ResetReadsVectorTableInCorrectOrder) {
     EXPECT_EQ(bus.reads[3].address, 0x000006U);
 }
 
-TEST(CpuTest, ResetDoesNotPerformAnyBusWrites) {
+TEST(CpuResetTest, ResetDoesNotPerformAnyBusWrites) {
     FakeBus bus;
     m68000::Cpu cpu;
 
@@ -89,13 +143,10 @@ TEST(CpuTest, ResetDoesNotPerformAnyBusWrites) {
     EXPECT_TRUE(bus.writes.empty());
 }
 
-TEST(CpuTest, ResetSetsRegistersToLoadedValues) {
+TEST(CpuResetTest, ResetSetsRegistersToLoadedValues) {
     FakeBus bus;
-    // Initial SSP: 0x00204000
     bus.memory16[0x000000U] = 0x0020U;
     bus.memory16[0x000002U] = 0x4000U;
-
-    // Initial PC: 0x00018000
     bus.memory16[0x000004U] = 0x0001U;
     bus.memory16[0x000006U] = 0x8000U;
 
@@ -107,9 +158,8 @@ TEST(CpuTest, ResetSetsRegistersToLoadedValues) {
     EXPECT_EQ(cpu.status(), 0x2700U);
 }
 
-TEST(CpuTest, ResetHandlesFull32BitRangeWithoutSignExtension) {
+TEST(CpuResetTest, ResetHandlesFull32BitRangeWithoutSignExtension) {
     FakeBus bus;
-    // Test high bit patterns across words
     bus.memory16[0x000000U] = 0xFFFFU;
     bus.memory16[0x000002U] = 0xFFFFU;
     bus.memory16[0x000004U] = 0x8000U;
@@ -122,129 +172,71 @@ TEST(CpuTest, ResetHandlesFull32BitRangeWithoutSignExtension) {
     EXPECT_EQ(cpu.pc(), 0x80000001U);
 }
 
-TEST(CpuTest, StepExecutesNopAndIncrementsPc) {
-    FakeBus bus;
-    bus.memory16[0x000000U] = 0x0020U;
-    bus.memory16[0x000002U] = 0x0000U;
-    bus.memory16[0x000004U] = 0x0000U;
-    bus.memory16[0x000006U] = 0x1000U;
+TEST_F(CpuTest, StepExecutesNopAndIncrementsPc) {
+    load_program({0x4E71U});
 
-    // NOP opcode: 0x4E71
-    bus.memory16[0x00001000U] = 0x4E71U;
-
-    m68000::Cpu cpu;
-    cpu.reset(bus);
-
-    const auto pre_reads = bus.reads.size();
     const auto initial_status = cpu.status();
     const auto initial_sp = cpu.A(7);
 
     cpu.step(bus);
 
-    EXPECT_EQ(cpu.pc(), 0x00001002U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
     EXPECT_EQ(cpu.status(), initial_status);
     EXPECT_EQ(cpu.A(7), initial_sp);
-    EXPECT_EQ(bus.reads.size(), pre_reads + 1U);
-    EXPECT_EQ(bus.reads.back().address, 0x00001000U);
-    EXPECT_EQ(bus.reads.back().size, 16U);
+    ASSERT_EQ(bus.reads.size(), 1U);
+    EXPECT_EQ(bus.reads[0].address, kDefaultPc);
+    EXPECT_EQ(bus.reads[0].size, 16U);
     EXPECT_TRUE(bus.writes.empty());
 }
 
-TEST(CpuTest, StepExecutesMultipleNopsSequentially) {
-    FakeBus bus;
-    bus.memory16[0x000000U] = 0x0020U;
-    bus.memory16[0x000002U] = 0x0000U;
-    bus.memory16[0x000004U] = 0x0000U;
-    bus.memory16[0x000006U] = 0x1000U;
-
-    bus.memory16[0x00001000U] = 0x4E71U;
-    bus.memory16[0x00001002U] = 0x4E71U;
-
-    m68000::Cpu cpu;
-    cpu.reset(bus);
+TEST_F(CpuTest, StepExecutesMultipleNopsSequentially) {
+    load_program({0x4E71U, 0x4E71U});
 
     cpu.step(bus);
-    EXPECT_EQ(cpu.pc(), 0x00001002U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
 
     cpu.step(bus);
-    EXPECT_EQ(cpu.pc(), 0x00001004U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
 }
 
-TEST(CpuTest, StepThrowsOnUnsupportedInstruction) {
-    FakeBus bus;
-    bus.memory16[0x000000U] = 0x0020U;
-    bus.memory16[0x000002U] = 0x0000U;
-    bus.memory16[0x000004U] = 0x0000U;
-    bus.memory16[0x000006U] = 0x1000U;
-
-    // Arbitrary unhandled opcode
-    bus.memory16[0x00001000U] = 0x1234U;
-
-    m68000::Cpu cpu;
-    cpu.reset(bus);
+TEST_F(CpuTest, StepThrowsOnUnsupportedInstruction) {
+    load_program({0x1234U});
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
 
-TEST(CpuTest, MoveqLoadsPositiveImmediateAndClearsFlags) {
-    FakeBus bus;
-    bus.memory16[0x000000U] = 0x0020U;
-    bus.memory16[0x000002U] = 0x0000U;
-    bus.memory16[0x000004U] = 0x0000U;
-    bus.memory16[0x000006U] = 0x1000U;
-
-    // MOVEQ #42, D3 -> 0x762A
-    bus.memory16[0x00001000U] = 0x762AU;
-
-    m68000::Cpu cpu;
-    cpu.reset(bus);
+TEST_F(CpuTest, MoveqLoadsPositiveImmediateAndClearsFlags) {
+    load_program({0x762AU}); // MOVEQ #42, D3
 
     cpu.step(bus);
 
     EXPECT_EQ(cpu.D(3), 42U);
-    EXPECT_EQ(cpu.pc(), 0x00001002U);
-    // N=0, Z=0, V=0, C=0 (bits 3..0 of status should be 0)
-    EXPECT_EQ(cpu.status() & 0x000FU, 0x0000U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
+    EXPECT_EQ(flags_nzvc(), 0U);
 }
 
-TEST(CpuTest, MoveqSignExtendsNegativeImmediateAndSetsNegativeFlag) {
-    FakeBus bus;
-    bus.memory16[0x000000U] = 0x0020U;
-    bus.memory16[0x000002U] = 0x0000U;
-    bus.memory16[0x000004U] = 0x0000U;
-    bus.memory16[0x000006U] = 0x1000U;
-
-    // MOVEQ #-1, D0 -> 0x70FF (0xFF sign-extended to 32 bits is 0xFFFFFFFF)
-    bus.memory16[0x00001000U] = 0x70FFU;
-
-    m68000::Cpu cpu;
-    cpu.reset(bus);
+TEST_F(CpuTest, MoveqSignExtendsNegativeImmediateAndSetsNegativeFlag) {
+    load_program({0x70FFU}); // MOVEQ #-1, D0
 
     cpu.step(bus);
 
     EXPECT_EQ(cpu.D(0), 0xFFFFFFFFU);
-    EXPECT_EQ(cpu.pc(), 0x00001002U);
-    // N flag is bit 3 (0x0008), Z=0, V=0, C=0
-    EXPECT_EQ(cpu.status() & 0x000FU, 0x0008U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
 }
 
-TEST(CpuTest, MoveqSetsZeroFlagWhenImmediateIsZero) {
-    FakeBus bus;
-    bus.memory16[0x000000U] = 0x0020U;
-    bus.memory16[0x000002U] = 0x0000U;
-    bus.memory16[0x000004U] = 0x0000U;
-    bus.memory16[0x000006U] = 0x1000U;
-
-    // MOVEQ #0, D5 -> 0x7A00
-    bus.memory16[0x00001000U] = 0x7A00U;
-
-    m68000::Cpu cpu;
-    cpu.reset(bus);
+TEST_F(CpuTest, MoveqSetsZeroFlagWhenImmediateIsZero) {
+    load_program({0x7A00U}); // MOVEQ #0, D5
 
     cpu.step(bus);
 
     EXPECT_EQ(cpu.D(5), 0U);
-    EXPECT_EQ(cpu.pc(), 0x00001002U);
-    // Z flag is bit 2 (0x0004), N=0, V=0, C=0
-    EXPECT_EQ(cpu.status() & 0x000FU, 0x0004U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
 }
