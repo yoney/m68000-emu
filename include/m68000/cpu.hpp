@@ -53,4 +53,9 @@ struct UnsupportedCondition : public std::runtime_error {
         : std::runtime_error{std::format("0x{:02X}", cond)} {}
 };
 
+struct UnsupportedSize : public std::runtime_error {
+    UnsupportedSize(std::uint8_t size)
+        : std::runtime_error{std::format("0x{:02X}", size)} {}
+};
+
 } // namespace m68000

@@ -88,9 +88,51 @@ constexpr std::uint16_t moveq_pattern = 0x7000U;
 constexpr std::uint16_t branch_mask = 0xF000U;
 constexpr std::uint16_t branch_pattern = 0x6000U;
 
+/*
+ * ADDQ / SUBQ
+ *
+ * ADDQ #<data>, <ea>
+ * SUBQ #<data>, <ea>
+ *
+ * 15             12 11    9 8   7   6 5            0
+ * +----------------+-------+---+-----+--------------+
+ * |      0101      | data  |o/s| size|      ea      |
+ * +----------------+-------+---+-----+--------------+
+ *
+ * data: 1-7 represents 1-7; 0 represents 8.
+ * o/s: 0 = ADDQ, 1 = SUBQ.
+ * size: 00 = Byte, 01 = Word, 10 = Long.
+ *
+ * For Dn and memory:
+ * X — Set to the value of the carry bit.
+ * N — Set if the result is negative; cleared otherwise.
+ * Z — Set if the result is zero; cleared otherwise.
+ * V — Set if an overflow occurs; cleared otherwise.
+ * C — Set if a carry/borrow occurs; cleared otherwise.
+ *
+ * For An:
+ * Condition codes are not affected.
+ */
+
+constexpr std::uint16_t addq_subq_mask = 0xF000U;
+constexpr std::uint16_t addq_subq_pattern = 0x5000U;
+
 [[nodiscard]] constexpr std::uint32_t
 add_displacement(std::uint32_t address, std::int32_t displacement) noexcept {
     return address + static_cast<std::uint32_t>(displacement);
+}
+
+[[nodiscard]] constexpr std::uint32_t get_size_mask(std::uint8_t size) {
+    switch (size) {
+    case 0:
+        return 0x000000FF;
+    case 1:
+        return 0x0000FFFF;
+    case 2:
+        return 0xFFFFFFFF;
+    default:
+        throw UnsupportedSize{size};
+    }
 }
 
 } // namespace
@@ -163,6 +205,53 @@ void Cpu::step(Bus &bus) {
         }
 
         pc_ = add_displacement(pc_, displacement);
+        return;
+    } else if ((instr & addq_subq_mask) == addq_subq_pattern &&
+               (instr & 0x00C0U) != 0x00C0U) {
+        std::uint8_t mode = (instr >> 3) & 0x07;
+        if (mode > 1) {
+            throw UnsupportedInstruction{instr};
+        }
+        bool is_addq = !(instr & 0x0100U);
+        std::uint32_t quick_data = (instr & 0x0E00U) >> 9;
+        if (quick_data == 0) {
+            quick_data = 8;
+        }
+        std::uint8_t index = instr & 0x0007;
+        if (mode == 1) {
+            if ((instr & 0x00C0) == 0) {
+                throw UnsupportedInstruction{instr};
+            }
+            A_[index] += is_addq ? quick_data : -quick_data;
+            return;
+        }
+        std::uint32_t size_mask = get_size_mask((instr & 0x00C0) >> 6);
+        // Only implement data-register for now, assume mode == b'000
+        std::uint32_t msb = (size_mask >> 1) + 1;
+        const std::uint32_t dest = D_[index] & size_mask;
+        bool is_dest_neg = !!(dest & msb);
+        std::uint32_t value = dest + (is_addq ? quick_data : -quick_data);
+        bool is_val_neg = !!(value & msb);
+        value &= size_mask;
+        status_ &= static_cast<std::uint16_t>(~(zero_flag | negative_flag |
+                                                extend_flag | overflow_flag |
+                                                carry_flag));
+        if (value == 0) {
+            status_ |= zero_flag;
+        }
+        if (is_val_neg) {
+            status_ |= negative_flag;
+        }
+        if ((is_addq && value < dest) || (!is_addq && dest < value)) {
+            status_ |= carry_flag | extend_flag;
+        }
+        if ((is_addq && !is_dest_neg && is_val_neg) ||
+            (!is_addq && is_dest_neg && !is_val_neg)) {
+            status_ |= overflow_flag;
+        }
+
+        D_[index] &= ~size_mask;
+        D_[index] |= value;
         return;
     }
 

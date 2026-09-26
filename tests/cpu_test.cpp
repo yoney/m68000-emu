@@ -556,3 +556,181 @@ TEST_F(CpuTest, BsrAndRtsExecuteSubroutineRoundTrip) {
     EXPECT_EQ(cpu.D(0), 42U);
     EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
 }
+
+TEST_F(CpuTest, AddqByteToDataRegisterModifiesOnlyLowByte) {
+    // Set D0 = 0x12345678 via MOVEQ then shift/load or setup
+    load_program({
+        0x7078U, // MOVEQ #0x78, D0
+        0x5200U  // ADDQ.B #1, D0
+    });
+
+    cpu.step(bus); // MOVEQ
+    EXPECT_EQ(cpu.D(0), 0x00000078U);
+
+    cpu.step(bus); // ADDQ.B #1, D0
+    EXPECT_EQ(cpu.D(0), 0x00000079U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+    EXPECT_FALSE(flag_x());
+    EXPECT_FALSE(flag_v());
+}
+
+TEST_F(CpuTest, AddqQuickDataZeroEncodesEight) {
+    load_program({
+        0x7002U, // MOVEQ #2, D0
+        0x5000U  // ADDQ.B #8, D0 (data field 000 = 8)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 10U);
+}
+
+TEST_F(CpuTest, AddqSetsZeroAndCarryFlagsOnWrap) {
+    load_program({
+        0x70FFU, // MOVEQ #-1, D0 (0xFFFFFFFF)
+        0x5200U  // ADDQ.B #1, D0 -> byte becomes 0x00, upper bits preserved
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0xFFFFFF00U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_TRUE(flag_c());
+    EXPECT_TRUE(flag_x());
+    EXPECT_FALSE(flag_v());
+}
+
+TEST_F(CpuTest, AddqSetsNegativeAndOverflowFlags) {
+    load_program({
+        0x707FU, // MOVEQ #127, D0 (0x7F)
+        0x5200U  // ADDQ.B #1, D0 -> 0x80 (-128 signed), overflow!
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0x00000080U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_c());
+    EXPECT_FALSE(flag_x());
+    EXPECT_TRUE(flag_v());
+}
+
+TEST_F(CpuTest, SubqSubtractsAndSetsZeroFlag) {
+    load_program({
+        0x7005U, // MOVEQ #5, D0
+        0x5B00U  // SUBQ.B #5, D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+    EXPECT_FALSE(flag_x());
+    EXPECT_FALSE(flag_v());
+}
+
+TEST_F(CpuTest, SubqSetsCarryAndExtendOnBorrow) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0x5300U  // SUBQ.B #1, D0 -> 0xFF (-1), borrow occurred!
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0x000000FFU);
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_n());
+    EXPECT_TRUE(flag_c());
+    EXPECT_TRUE(flag_x());
+    EXPECT_FALSE(flag_v());
+}
+
+TEST_F(CpuTest, SubqSetsOverflowWhenNegativeBecomesPositive) {
+    load_program({
+        0x7080U, // MOVEQ #-128, D0 (0xFFFFFF80)
+        0x5300U  // SUBQ.B #1, D0 -> byte wraps to 0x7F (+127), overflow!
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0xFFFFFF7FU);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+    EXPECT_FALSE(flag_x());
+    EXPECT_TRUE(flag_v());
+}
+
+TEST_F(CpuTest, AddqWordToAddressRegisterAffectsFull32BitAndPreservesFlags) {
+    load_program({
+        0x70FFU, // MOVEQ #-1, D0 (sets N flag)
+        0x5248U  // ADDQ.W #1, A0 (A0 is initially 0)
+    });
+
+    cpu.step(bus);
+    const auto status_before = cpu.status();
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(0), 1U);
+    EXPECT_EQ(cpu.status(), status_before); // Flags unchanged!
+}
+
+TEST_F(CpuTest, AddqWordToAddressRegisterPropagatesCarryIntoUpperBits) {
+    // Initialize A0 to 0x0001FFFF via stack pointer or by resetting A0
+    // We can simulate an initial A0 by writing to reset vector or executing
+    // instructions. Here, let's execute ADDQ.L to build up A0.
+    load_program({
+        0x5248U // ADDQ.W #1, A0
+    });
+
+    // Reset A0 to 0x0001FFFF by writing to bus reset vector if needed,
+    // or we can test full 32-bit addition.
+    // A0 is 0 by default. Let's do 32-bit SUBQ to make it 0xFFFFFFFF
+    load_program({
+        0x5388U, // SUBQ.L #1, A0 -> 0xFFFFFFFF
+        0x5248U  // ADDQ.W #1, A0 -> wraps to 0x00000000 (full 32-bit update)
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(0), 0xFFFFFFFFU);
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(0), 0x00000000U); // Proves 32-bit wrap, not 16-bit!
+}
+
+TEST_F(CpuTest, AddqByteToAddressRegisterThrowsUnsupportedInstruction) {
+    load_program({
+        0x5208U // ADDQ.B #1, A0 (illegal size on An)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, AddqUnsupportedModeThrows) {
+    load_program({
+        0x5250U // ADDQ.W #1, (A0) (mode 2, memory mode)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, SccAndDbccOpcodeSpaceDoesNotEnterAddq) {
+    load_program({
+        0x51C8U // DBRA D0, label (size bits 11, should throw
+                // UnsupportedInstruction)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
