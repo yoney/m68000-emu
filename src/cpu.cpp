@@ -222,7 +222,11 @@ void Cpu::step(Bus &bus) {
             if ((instr & 0x00C0) == 0) {
                 throw UnsupportedInstruction{instr};
             }
-            A_[index] += is_addq ? quick_data : -quick_data;
+            if (is_addq) {
+                A_[index] += quick_data;
+            } else {
+                A_[index] -= quick_data;
+            }
             return;
         }
         std::uint32_t size_mask = get_size_mask((instr & 0x00C0) >> 6);
@@ -230,9 +234,9 @@ void Cpu::step(Bus &bus) {
         std::uint32_t msb = (size_mask >> 1) + 1;
         const std::uint32_t dest = D_[index] & size_mask;
         bool is_dest_neg = !!(dest & msb);
-        std::uint32_t value = dest + (is_addq ? quick_data : -quick_data);
+        std::uint32_t value =
+            (is_addq ? dest + quick_data : dest - quick_data) & size_mask;
         bool is_val_neg = !!(value & msb);
-        value &= size_mask;
         status_ &= static_cast<std::uint16_t>(~(zero_flag | negative_flag |
                                                 extend_flag | overflow_flag |
                                                 carry_flag));
