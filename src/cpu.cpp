@@ -174,8 +174,6 @@ bool Cpu::condition_true(std::uint8_t condition) const {
     default:
         throw UnsupportedCondition{condition};
     }
-
-    return false;
 }
 
 } // namespace m68000
