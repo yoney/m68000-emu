@@ -47,6 +47,32 @@ constexpr std::uint16_t nop_opcode = 0x4E71U;
 
 constexpr std::uint16_t moveq_mask = 0xF100U;
 constexpr std::uint16_t moveq_pattern = 0x7000U;
+/*
+ * BRA
+ *
+ * BRA <label>
+ *
+ * 15                         8 7                  0
+ * +---------------------------+--------------------+
+ * |         01100000          | 8-bit displacement |
+ * +---------------------------+--------------------+
+ * |        16-bit displacement if 8-bit is 0       |
+ * +------------------------------------------------+
+ *
+ * X — Not affected.
+ * N — Not affected.
+ * Z — Not affected.
+ * V — Not affected.
+ * C — Not affected.
+ */
+
+constexpr std::uint16_t bra_mask = 0xFF00U;
+constexpr std::uint16_t bra_pattern = 0x6000U;
+
+[[nodiscard]] constexpr std::uint32_t
+add_displacement(std::uint32_t address, std::int32_t displacement) noexcept {
+    return address + static_cast<std::uint32_t>(displacement);
+}
 
 } // namespace
 
@@ -64,7 +90,7 @@ void Cpu::reset(Bus &bus) {
 
 void Cpu::step(Bus &bus) {
     std::uint16_t instr = bus.read16(pc_);
-    pc_ += 2;
+    pc_ += 2U;
 
     if (instr == nop_opcode) {
         return;
@@ -78,6 +104,15 @@ void Cpu::step(Bus &bus) {
         } else if (immediate < 0) {
             status_ |= negative_flag;
         }
+        return;
+    } else if ((instr & bra_mask) == bra_pattern) {
+        std::int32_t displacement{static_cast<std::int8_t>(instr & 0x00FFU)};
+        if (displacement == 0) {
+            // 16-bit displacement is relative to current pc_
+            std::uint16_t displacement16 = bus.read16(pc_);
+            displacement = static_cast<std::int16_t>(displacement16);
+        }
+        pc_ = add_displacement(pc_, displacement);
         return;
     }
 

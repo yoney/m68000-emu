@@ -266,3 +266,79 @@ TEST_F(CpuTest, MoveqLoadsMaximumPositiveImmediate) {
     EXPECT_FALSE(flag_v());
     EXPECT_FALSE(flag_c());
 }
+
+TEST_F(CpuTest, BraShortForwardBranchesCorrectlyAndPreservesFlags) {
+    load_program(
+        {0x6004U, 0x4E71U, 0x4E71U}); // BRA.S *+6 (offset +4 from PC+2)
+    const auto initial_status = cpu.status();
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
+    EXPECT_EQ(cpu.status(), initial_status);
+    ASSERT_EQ(bus.reads.size(), 1U);
+    EXPECT_EQ(bus.reads[0].address, kDefaultPc);
+    EXPECT_EQ(bus.reads[0].size, 16U);
+    EXPECT_TRUE(bus.writes.empty());
+}
+
+TEST_F(CpuTest, BraShortBackwardBranchesToSelf) {
+    load_program({0x60FEU}); // BRA.S * (offset -2 from PC+2)
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc);
+    ASSERT_EQ(bus.reads.size(), 1U);
+    EXPECT_TRUE(bus.writes.empty());
+}
+
+TEST_F(CpuTest, BraShortSignExtendsMinimumDisplacement) {
+    load_program({0x6080U}); // BRA.S -128
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U - 128U);
+}
+
+TEST_F(CpuTest, BraWordForwardBranchesCorrectlyAndPreservesFlags) {
+    load_program({0x6000U, 0x0006U, 0x4E71U,
+                  0x4E71U}); // BRA.W *+8 (offset +6 from PC+2)
+    const auto initial_status = cpu.status();
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
+    EXPECT_EQ(cpu.status(), initial_status);
+    ASSERT_EQ(bus.reads.size(), 2U);
+    EXPECT_EQ(bus.reads[0].address, kDefaultPc);
+    EXPECT_EQ(bus.reads[0].size, 16U);
+    EXPECT_EQ(bus.reads[1].address, kDefaultPc + 2U);
+    EXPECT_EQ(bus.reads[1].size, 16U);
+    EXPECT_TRUE(bus.writes.empty());
+}
+
+TEST_F(CpuTest, BraWordBackwardBranchesToSelf) {
+    load_program({0x6000U, 0xFFFEU}); // BRA.W * (offset -2 from PC+2)
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc);
+    ASSERT_EQ(bus.reads.size(), 2U);
+    EXPECT_TRUE(bus.writes.empty());
+}
+
+TEST_F(CpuTest, BraWordZeroDisplacementBranchesToDisplacementWord) {
+    load_program({0x6000U, 0x0000U}); // BRA.W offset 0 from PC+2
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
+}
+
+TEST_F(CpuTest, BraWordSignExtendsNegativeDisplacement) {
+    load_program({0x6000U, 0xFF00U}); // BRA.W -256
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U - 256U);
+}
