@@ -453,8 +453,48 @@ TEST_F(CpuTest, BplBranchesWhenNegativeFlagIsClear) {
     EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
 }
 
-TEST_F(CpuTest, StepThrowsOnUnsupportedBsrInstruction) {
-    load_program({0x6100U}); // BSR
+TEST_F(CpuTest, BsrShortPushesReturnAddressAndBranches) {
+    load_program({0x6104U, 0x4E71U, 0x4E71U}); // BSR.S *+6
+    const auto initial_sp = cpu.A(7);
+    const auto initial_status = cpu.status();
 
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(cpu.status(), initial_status);
+
+    // Verify 32-bit return address (kDefaultPc + 2) was pushed onto the stack
+    EXPECT_EQ(bus.memory16[initial_sp - 4U],
+              static_cast<std::uint16_t>((kDefaultPc + 2U) >> 16));
+    EXPECT_EQ(bus.memory16[initial_sp - 2U],
+              static_cast<std::uint16_t>((kDefaultPc + 2U) & 0xFFFFU));
+
+    ASSERT_EQ(bus.reads.size(), 1U);
+    ASSERT_EQ(bus.writes.size(), 2U);
+    EXPECT_EQ(bus.writes[0].address, initial_sp - 4U);
+    EXPECT_EQ(bus.writes[1].address, initial_sp - 2U);
+}
+
+TEST_F(CpuTest, BsrWordPushesReturnAddressAndBranches) {
+    load_program({0x6100U, 0x0006U, 0x4E71U, 0x4E71U}); // BSR.W *+8
+    const auto initial_sp = cpu.A(7);
+    const auto initial_status = cpu.status();
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(cpu.status(), initial_status);
+
+    // Verify 32-bit return address (kDefaultPc + 4) was pushed onto the stack
+    EXPECT_EQ(bus.memory16[initial_sp - 4U],
+              static_cast<std::uint16_t>((kDefaultPc + 4U) >> 16));
+    EXPECT_EQ(bus.memory16[initial_sp - 2U],
+              static_cast<std::uint16_t>((kDefaultPc + 4U) & 0xFFFFU));
+
+    ASSERT_EQ(bus.reads.size(), 2U);
+    ASSERT_EQ(bus.writes.size(), 2U);
+    EXPECT_EQ(bus.writes[0].address, initial_sp - 4U);
+    EXPECT_EQ(bus.writes[1].address, initial_sp - 2U);
 }

@@ -110,13 +110,10 @@ void Cpu::step(Bus &bus) {
         std::uint8_t condition{
             static_cast<std::uint8_t>((instr >> 8U) & 0x0FU)};
 
-        // 0x61xx is BSR (Branch to Subroutine)
-        if (condition == 1) {
-            throw UnsupportedInstruction{instr};
-        }
-
         std::int32_t displacement{static_cast<std::int8_t>(instr & 0x00FFU)};
-        if (condition != 0 && !condition_true(condition)) {
+        std::uint32_t return_address{pc_};
+
+        if (condition != 0 && condition != 1 && !condition_true(condition)) {
             if (displacement == 0) {
                 bus.read16(pc_);
                 pc_ += 2;
@@ -128,7 +125,18 @@ void Cpu::step(Bus &bus) {
             // 16-bit displacement is relative to current pc_
             std::uint16_t displacement16 = bus.read16(pc_);
             displacement = static_cast<std::int16_t>(displacement16);
+            return_address += 2U;
         }
+
+        if (condition == 1) {
+            // BSR (Branch to Subroutine)
+            A_[7] -= 4U;
+            bus.write16(A_[7],
+                        static_cast<std::uint16_t>(return_address >> 16));
+            bus.write16(A_[7] + 2U,
+                        static_cast<std::uint16_t>(return_address & 0xFFFFU));
+        }
+
         pc_ = add_displacement(pc_, displacement);
         return;
     }
