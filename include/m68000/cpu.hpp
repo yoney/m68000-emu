@@ -34,8 +34,18 @@ public:
     [[nodiscard]] std::uint32_t pc() const noexcept { return pc_; }
     [[nodiscard]] std::uint16_t status() const noexcept { return status_; }
 
+    enum class OperandSize : std::uint8_t {
+        byte,
+        word,
+        long_word,
+    };
+
 private:
     [[nodiscard]] bool condition_true(std::uint8_t condition) const;
+    [[nodiscard]] std::uint32_t
+    execute_quick_arithmetic(std::uint32_t destination,
+                             std::uint32_t quick_data, OperandSize size,
+                             bool is_addq);
 
     std::array<std::uint32_t, 8> D_{}; // D0-D7
     std::array<std::uint32_t, 8> A_{}; // A0-A7

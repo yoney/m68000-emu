@@ -122,16 +122,21 @@ add_displacement(std::uint32_t address, std::int32_t displacement) noexcept {
     return address + static_cast<std::uint32_t>(displacement);
 }
 
-[[nodiscard]] constexpr std::uint32_t get_size_mask(std::uint8_t size) {
+[[nodiscard]] constexpr std::uint32_t get_size_mask(Cpu::OperandSize size) {
     switch (size) {
-    case 0:
-        return 0x000000FF;
-    case 1:
-        return 0x0000FFFF;
-    case 2:
-        return 0xFFFFFFFF;
-    default:
-        throw UnsupportedSize{size};
+        case Cpu::OperandSize::byte: return 0x000000FF;
+        case Cpu::OperandSize::word: return 0x0000FFFF;
+        case Cpu::OperandSize::long_word: return 0xFFFFFFFF;
+    }
+    return 0x0;
+}
+
+[[nodiscard]] Cpu::OperandSize decode_size(std::uint8_t size) {
+    switch (size) {
+        case 0: return Cpu::OperandSize::byte;
+        case 1: return Cpu::OperandSize::word;
+        case 2: return Cpu::OperandSize::long_word;
+        default: throw UnsupportedSize{size};
     }
 }
 
@@ -229,31 +234,10 @@ void Cpu::step(Bus &bus) {
             }
             return;
         }
-        std::uint32_t size_mask = get_size_mask((instr & 0x00C0) >> 6);
-        // Only implement data-register for now, assume mode == b'000
-        std::uint32_t msb = (size_mask >> 1) + 1;
-        const std::uint32_t dest = D_[index] & size_mask;
-        bool is_dest_neg = !!(dest & msb);
-        std::uint32_t value =
-            (is_addq ? dest + quick_data : dest - quick_data) & size_mask;
-        bool is_val_neg = !!(value & msb);
-        status_ &= static_cast<std::uint16_t>(~(zero_flag | negative_flag |
-                                                extend_flag | overflow_flag |
-                                                carry_flag));
-        if (value == 0) {
-            status_ |= zero_flag;
-        }
-        if (is_val_neg) {
-            status_ |= negative_flag;
-        }
-        if ((is_addq && value < dest) || (!is_addq && dest < value)) {
-            status_ |= carry_flag | extend_flag;
-        }
-        if ((is_addq && !is_dest_neg && is_val_neg) ||
-            (!is_addq && is_dest_neg && !is_val_neg)) {
-            status_ |= overflow_flag;
-        }
-
+        auto size = decode_size((instr & 0x00C0) >> 6);
+        std::uint32_t size_mask = get_size_mask(size);
+        auto value =
+            execute_quick_arithmetic(D_[index], quick_data, size, is_addq);
         D_[index] &= ~size_mask;
         D_[index] |= value;
         return;
@@ -269,37 +253,67 @@ bool Cpu::condition_true(std::uint8_t condition) const {
     const bool n = (status_ & negative_flag) != 0;
 
     switch (condition) {
-    case 2: // HI: High (!C && !Z)
-        return !c && !z;
-    case 3: // LS: Low or Same (C || Z)
-        return c || z;
-    case 4: // CC/HS: Carry Clear / High or Same (!C)
-        return !c;
-    case 5: // CS/LO: Carry Set / Low (C)
-        return c;
-    case 6: // NE: Not Equal (!Z)
-        return !z;
-    case 7: // EQ: Equal (Z)
-        return z;
-    case 8: // VC: Overflow Clear (!V)
-        return !v;
-    case 9: // VS: Overflow Set (V)
-        return v;
-    case 10: // PL: Plus / Positive (!N)
-        return !n;
-    case 11: // MI: Minus / Negative (N)
-        return n;
-    case 12: // GE: Greater or Equal (N == V)
-        return n == v;
-    case 13: // LT: Less Than (N != V)
-        return n != v;
-    case 14: // GT: Greater Than (!Z && N == V)
-        return !z && (n == v);
-    case 15: // LE: Less or Equal (Z || N != V)
-        return z || (n != v);
-    default:
-        throw UnsupportedCondition{condition};
+        case 2: // HI: High (!C && !Z)
+            return !c && !z;
+        case 3: // LS: Low or Same (C || Z)
+            return c || z;
+        case 4: // CC/HS: Carry Clear / High or Same (!C)
+            return !c;
+        case 5: // CS/LO: Carry Set / Low (C)
+            return c;
+        case 6: // NE: Not Equal (!Z)
+            return !z;
+        case 7: // EQ: Equal (Z)
+            return z;
+        case 8: // VC: Overflow Clear (!V)
+            return !v;
+        case 9: // VS: Overflow Set (V)
+            return v;
+        case 10: // PL: Plus / Positive (!N)
+            return !n;
+        case 11: // MI: Minus / Negative (N)
+            return n;
+        case 12: // GE: Greater or Equal (N == V)
+            return n == v;
+        case 13: // LT: Less Than (N != V)
+            return n != v;
+        case 14: // GT: Greater Than (!Z && N == V)
+            return !z && (n == v);
+        case 15: // LE: Less or Equal (Z || N != V)
+            return z || (n != v);
+        default: throw UnsupportedCondition{condition};
     }
+}
+
+std::uint32_t Cpu::execute_quick_arithmetic(std::uint32_t destination,
+                                            std::uint32_t quick_data,
+                                            OperandSize size, bool is_addq) {
+
+    std::uint32_t size_mask = get_size_mask(size);
+    std::uint32_t msb = (size_mask >> 1) + 1;
+    destination &= size_mask;
+    bool is_dest_neg = !!(destination & msb);
+    std::uint32_t value =
+        (is_addq ? destination + quick_data : destination - quick_data) &
+        size_mask;
+    bool is_val_neg = !!(value & msb);
+
+    status_ &= static_cast<std::uint16_t>(~(
+        zero_flag | negative_flag | extend_flag | overflow_flag | carry_flag));
+    if (value == 0) {
+        status_ |= zero_flag;
+    }
+    if (is_val_neg) {
+        status_ |= negative_flag;
+    }
+    if ((is_addq && value < destination) || (!is_addq && destination < value)) {
+        status_ |= carry_flag | extend_flag;
+    }
+    if ((is_addq && !is_dest_neg && is_val_neg) ||
+        (!is_addq && is_dest_neg && !is_val_neg)) {
+        status_ |= overflow_flag;
+    }
+    return value;
 }
 
 } // namespace m68000
