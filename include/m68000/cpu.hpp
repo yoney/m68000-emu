@@ -35,6 +35,8 @@ public:
     [[nodiscard]] std::uint16_t status() const noexcept { return status_; }
 
 private:
+    [[nodiscard]] bool condition_true(std::uint8_t condition) const;
+
     std::array<std::uint32_t, 8> D_{}; // D0-D7
     std::array<std::uint32_t, 8> A_{}; // A0-A7
     std::uint32_t pc_{};
@@ -44,6 +46,11 @@ private:
 struct UnsupportedInstruction : public std::runtime_error {
     UnsupportedInstruction(std::uint16_t instr)
         : std::runtime_error{std::format("0x{:04X}", instr)} {}
+};
+
+struct UnsupportedCondition : public std::runtime_error {
+    UnsupportedCondition(std::uint8_t cond)
+        : std::runtime_error{std::format("0x{:02X}", cond)} {}
 };
 
 } // namespace m68000

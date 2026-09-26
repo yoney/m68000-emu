@@ -48,16 +48,17 @@ constexpr std::uint16_t nop_opcode = 0x4E71U;
 constexpr std::uint16_t moveq_mask = 0xF100U;
 constexpr std::uint16_t moveq_pattern = 0x7000U;
 /*
- * BRA
+ * Bcc / BRA
  *
+ * Bcc <label>
  * BRA <label>
  *
- * 15                         8 7                  0
- * +---------------------------+--------------------+
- * |         01100000          | 8-bit displacement |
- * +---------------------------+--------------------+
- * |        16-bit displacement if 8-bit is 0       |
- * +------------------------------------------------+
+ * 15             12 11    8 7                  0
+ * +----------------+--------+--------------------+
+ * |      0110      |  cond  | 8-bit displacement |
+ * +----------------+--------+--------------------+
+ * |       16-bit displacement if 8-bit is 0      |
+ * +----------------------------------------------+
  *
  * X — Not affected.
  * N — Not affected.
@@ -66,8 +67,8 @@ constexpr std::uint16_t moveq_pattern = 0x7000U;
  * C — Not affected.
  */
 
-constexpr std::uint16_t bra_mask = 0xFF00U;
-constexpr std::uint16_t bra_pattern = 0x6000U;
+constexpr std::uint16_t branch_mask = 0xF000U;
+constexpr std::uint16_t branch_pattern = 0x6000U;
 
 [[nodiscard]] constexpr std::uint32_t
 add_displacement(std::uint32_t address, std::int32_t displacement) noexcept {
@@ -105,8 +106,24 @@ void Cpu::step(Bus &bus) {
             status_ |= negative_flag;
         }
         return;
-    } else if ((instr & bra_mask) == bra_pattern) {
+    } else if ((instr & branch_mask) == branch_pattern) {
+        std::uint8_t condition{
+            static_cast<std::uint8_t>((instr >> 8U) & 0x0FU)};
+
+        // 0x61xx is BSR (Branch to Subroutine)
+        if (condition == 1) {
+            throw UnsupportedInstruction{instr};
+        }
+
         std::int32_t displacement{static_cast<std::int8_t>(instr & 0x00FFU)};
+        if (condition != 0 && !condition_true(condition)) {
+            if (displacement == 0) {
+                bus.read16(pc_);
+                pc_ += 2;
+            }
+            return;
+        }
+
         if (displacement == 0) {
             // 16-bit displacement is relative to current pc_
             std::uint16_t displacement16 = bus.read16(pc_);
@@ -117,6 +134,48 @@ void Cpu::step(Bus &bus) {
     }
 
     throw UnsupportedInstruction{instr};
+}
+
+bool Cpu::condition_true(std::uint8_t condition) const {
+    const bool c = (status_ & carry_flag) != 0;
+    const bool v = (status_ & overflow_flag) != 0;
+    const bool z = (status_ & zero_flag) != 0;
+    const bool n = (status_ & negative_flag) != 0;
+
+    switch (condition) {
+    case 2: // HI: High (!C && !Z)
+        return !c && !z;
+    case 3: // LS: Low or Same (C || Z)
+        return c || z;
+    case 4: // CC/HS: Carry Clear / High or Same (!C)
+        return !c;
+    case 5: // CS/LO: Carry Set / Low (C)
+        return c;
+    case 6: // NE: Not Equal (!Z)
+        return !z;
+    case 7: // EQ: Equal (Z)
+        return z;
+    case 8: // VC: Overflow Clear (!V)
+        return !v;
+    case 9: // VS: Overflow Set (V)
+        return v;
+    case 10: // PL: Plus / Positive (!N)
+        return !n;
+    case 11: // MI: Minus / Negative (N)
+        return n;
+    case 12: // GE: Greater or Equal (N == V)
+        return n == v;
+    case 13: // LT: Less Than (N != V)
+        return n != v;
+    case 14: // GT: Greater Than (!Z && N == V)
+        return !z && (n == v);
+    case 15: // LE: Less or Equal (Z || N != V)
+        return z || (n != v);
+    default:
+        throw UnsupportedCondition{condition};
+    }
+
+    return false;
 }
 
 } // namespace m68000

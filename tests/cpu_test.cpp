@@ -351,3 +351,110 @@ TEST_F(CpuTest, BraTreatsFFAsShortMinusOne) {
     EXPECT_EQ(cpu.pc(), kDefaultPc + 1U);
     ASSERT_EQ(bus.reads.size(), 1U);
 }
+
+TEST_F(CpuTest, BccShortBranchesWhenConditionIsTrue) {
+    load_program(
+        {0x7000U, 0x6704U, 0x4E71U, 0x4E71U}); // MOVEQ #0, D0 (Z=1); BEQ.S *+6
+    cpu.step(bus);                             // MOVEQ #0, D0
+    bus.reads.clear();
+
+    const auto status_before = cpu.status();
+    cpu.step(bus); // BEQ.S *+6
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
+    EXPECT_EQ(cpu.status(), status_before);
+    ASSERT_EQ(bus.reads.size(), 1U);
+    EXPECT_EQ(bus.reads[0].address, kDefaultPc + 2U);
+    EXPECT_TRUE(bus.writes.empty());
+}
+
+TEST_F(CpuTest, BccShortDoesNotBranchWhenConditionIsFalse) {
+    load_program({0x7001U, 0x6704U, 0x4E71U}); // MOVEQ #1, D0 (Z=0); BEQ.S *+6
+    cpu.step(bus);                             // MOVEQ #1, D0
+    bus.reads.clear();
+
+    const auto status_before = cpu.status();
+    cpu.step(bus); // BEQ.S *+6
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
+    EXPECT_EQ(cpu.status(), status_before);
+    ASSERT_EQ(bus.reads.size(), 1U);
+    EXPECT_EQ(bus.reads[0].address, kDefaultPc + 2U);
+    EXPECT_TRUE(bus.writes.empty());
+}
+
+TEST_F(CpuTest, BccWordBranchesWhenConditionIsTrue) {
+    load_program({0x7000U, 0x6700U, 0x0006U, 0x4E71U,
+                  0x4E71U}); // MOVEQ #0, D0 (Z=1); BEQ.W *+8
+    cpu.step(bus);           // MOVEQ #0, D0
+    bus.reads.clear();
+
+    const auto status_before = cpu.status();
+    cpu.step(bus); // BEQ.W *+8
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 10U);
+    EXPECT_EQ(cpu.status(), status_before);
+    ASSERT_EQ(bus.reads.size(), 2U);
+    EXPECT_EQ(bus.reads[0].address, kDefaultPc + 2U);
+    EXPECT_EQ(bus.reads[1].address, kDefaultPc + 4U);
+    EXPECT_TRUE(bus.writes.empty());
+}
+
+TEST_F(CpuTest, BccWordAdvancesPcAndReadsExtensionWhenConditionIsFalse) {
+    load_program({0x7001U, 0x6700U, 0x0006U,
+                  0x4E71U}); // MOVEQ #1, D0 (Z=0); BEQ.W *+8; NOP
+    cpu.step(bus);           // MOVEQ #1, D0
+    bus.reads.clear();
+
+    const auto status_before = cpu.status();
+    cpu.step(bus); // BEQ.W *+8 (not taken)
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
+    EXPECT_EQ(cpu.status(), status_before);
+    ASSERT_EQ(bus.reads.size(), 2U);
+    EXPECT_EQ(bus.reads[0].address, kDefaultPc + 2U);
+    EXPECT_EQ(bus.reads[1].address, kDefaultPc + 4U);
+    EXPECT_TRUE(bus.writes.empty());
+
+    // Next step executes the following NOP at kDefaultPc + 6U
+    cpu.step(bus);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
+}
+
+TEST_F(CpuTest, BneBranchesWhenZeroFlagIsClear) {
+    load_program({0x7001U, 0x6604U}); // MOVEQ #1, D0 (Z=0); BNE.S *+6
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
+}
+
+TEST_F(CpuTest, BneDoesNotBranchWhenZeroFlagIsSet) {
+    load_program({0x7000U, 0x6604U}); // MOVEQ #0, D0 (Z=1); BNE.S *+6
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
+}
+
+TEST_F(CpuTest, BmiBranchesWhenNegativeFlagIsSet) {
+    load_program({0x70FFU, 0x6B04U}); // MOVEQ #-1, D0 (N=1); BMI.S *+6
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
+}
+
+TEST_F(CpuTest, BplBranchesWhenNegativeFlagIsClear) {
+    load_program({0x7001U, 0x6A04U}); // MOVEQ #1, D0 (N=0); BPL.S *+6
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
+}
+
+TEST_F(CpuTest, StepThrowsOnUnsupportedBsrInstruction) {
+    load_program({0x6100U}); // BSR
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
