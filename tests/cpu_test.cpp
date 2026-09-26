@@ -342,3 +342,12 @@ TEST_F(CpuTest, BraWordSignExtendsNegativeDisplacement) {
 
     EXPECT_EQ(cpu.pc(), kDefaultPc + 2U - 256U);
 }
+
+TEST_F(CpuTest, BraTreatsFFAsShortMinusOne) {
+    load_program({0x60FFU});
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 1U);
+    ASSERT_EQ(bus.reads.size(), 1U);
+}
