@@ -27,6 +27,23 @@ constexpr std::uint16_t supervisor_mask = 1U << 13;
 constexpr std::uint16_t interrupt_mask = 0x0700;
 
 constexpr std::uint16_t nop_opcode = 0x4E71U;
+/*
+ * RTS
+ *
+ * RTS
+ *
+ * 15                                              0
+ * +-----------------------------------------------+
+ * |               0100111001110101                |
+ * +-----------------------------------------------+
+ *
+ * X — Not affected.
+ * N — Not affected.
+ * Z — Not affected.
+ * V — Not affected.
+ * C — Not affected.
+ */
+constexpr std::uint16_t rts_opcode = 0x4E75U;
 
 /*
  * MOVEQ
@@ -48,10 +65,11 @@ constexpr std::uint16_t nop_opcode = 0x4E71U;
 constexpr std::uint16_t moveq_mask = 0xF100U;
 constexpr std::uint16_t moveq_pattern = 0x7000U;
 /*
- * Bcc / BRA
+ * Bcc / BRA / BSR
  *
  * Bcc <label>
  * BRA <label>
+ * BSR <label>
  *
  * 15             12 11    8 7                  0
  * +----------------+--------+--------------------+
@@ -94,6 +112,13 @@ void Cpu::step(Bus &bus) {
     pc_ += 2U;
 
     if (instr == nop_opcode) {
+        return;
+    } else if (instr == rts_opcode) {
+        std::uint32_t return_address = bus.read16(A_[7]);
+        return_address <<= 16;
+        return_address |= bus.read16(A_[7] + 2U);
+        A_[7] += 4U;
+        pc_ = return_address;
         return;
     } else if ((instr & moveq_mask) == moveq_pattern) {
         std::size_t index{(instr >> 9) & 0x0007U};

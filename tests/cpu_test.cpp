@@ -498,3 +498,61 @@ TEST_F(CpuTest, BsrWordPushesReturnAddressAndBranches) {
     EXPECT_EQ(bus.writes[0].address, initial_sp - 4U);
     EXPECT_EQ(bus.writes[1].address, initial_sp - 2U);
 }
+
+TEST_F(CpuTest, RtsPopsReturnAddressAndIncrementsStackPointer) {
+    const std::uint32_t target_pc = 0x00004000U;
+    const auto initial_sp = cpu.A(7);
+    const auto initial_status = cpu.status();
+
+    // Place 32-bit return address onto the stack (big-endian)
+    bus.memory16[initial_sp] = static_cast<std::uint16_t>(target_pc >> 16);
+    bus.memory16[initial_sp + 2U] =
+        static_cast<std::uint16_t>(target_pc & 0xFFFFU);
+
+    load_program({0x4E75U}); // RTS
+
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), target_pc);
+    EXPECT_EQ(cpu.A(7), initial_sp + 4U);
+    EXPECT_EQ(cpu.status(), initial_status);
+
+    ASSERT_EQ(bus.reads.size(), 3U);
+    EXPECT_EQ(bus.reads[0].address, kDefaultPc);
+    EXPECT_EQ(bus.reads[1].address, initial_sp);
+    EXPECT_EQ(bus.reads[2].address, initial_sp + 2U);
+    EXPECT_TRUE(bus.writes.empty());
+}
+
+TEST_F(CpuTest, BsrAndRtsExecuteSubroutineRoundTrip) {
+    const auto initial_sp = cpu.A(7);
+
+    // Main routine:
+    //   0x1000: BSR.S +4 (jump to subroutine at 0x1006)
+    //   0x1002: MOVEQ #42, D0 (return target)
+    //   0x1004: NOP
+    // Subroutine:
+    //   0x1006: RTS
+    load_program({
+        0x6104U, // BSR.S *+6
+        0x702AU, // MOVEQ #42, D0
+        0x4E71U, // NOP
+        0x4E75U  // RTS
+    });
+
+    // 1. Execute BSR.S: calls subroutine, pushes return address (kDefaultPc +
+    // 2)
+    cpu.step(bus);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+
+    // 2. Execute RTS: returns to kDefaultPc + 2 and restores stack pointer
+    cpu.step(bus);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
+    EXPECT_EQ(cpu.A(7), initial_sp);
+
+    // 3. Execute MOVEQ #42, D0: confirms execution resumed at caller
+    cpu.step(bus);
+    EXPECT_EQ(cpu.D(0), 42U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
+}
