@@ -734,3 +734,46 @@ TEST_F(CpuTest, SccAndDbccOpcodeSpaceDoesNotEnterAddq) {
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
+
+TEST_F(CpuTest, SubqWordPreservesUpperWord) {
+    load_program({
+        0x70FFU, // MOVEQ #-1, D0 -> 0xFFFFFFFF
+        0x5340U  // SUBQ.W #1, D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0xFFFFFFFEU);
+}
+
+TEST_F(CpuTest, AddqLongSetsCarryOnWrap) {
+    load_program({
+        0x70FFU, // MOVEQ #-1, D0
+        0x5280U  // ADDQ.L #1, D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_TRUE(flag_c());
+    EXPECT_TRUE(flag_x());
+}
+
+TEST_F(CpuTest, SubqLongSetsBorrowAndExtendOnBorrow) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0x5380U  // SUBQ.L #1, D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0xFFFFFFFFU);
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_n());
+    EXPECT_TRUE(flag_c());
+    EXPECT_TRUE(flag_x());
+}
