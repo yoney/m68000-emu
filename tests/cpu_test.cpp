@@ -28,24 +28,22 @@ public:
 
     std::uint8_t read8(std::uint32_t address) override {
         reads.push_back({address, 8});
-        return load_byte(address);
+        return peek8(address);
     }
 
     std::uint16_t read16(std::uint32_t address) override {
         reads.push_back({address, 16});
-        return (static_cast<std::uint16_t>(load_byte(address)) << 8) |
-               static_cast<std::uint16_t>(load_byte(address + 1U));
+        return peek16(address);
     }
 
     void write8(std::uint32_t address, std::uint8_t value) override {
         writes.push_back({address, static_cast<std::uint16_t>(value), 8});
-        store_byte(address, value);
+        poke8(address, value);
     }
 
     void write16(std::uint32_t address, std::uint16_t value) override {
         writes.push_back({address, value, 16});
-        store_byte(address, static_cast<std::uint8_t>(value >> 8));
-        store_byte(address + 1U, static_cast<std::uint8_t>(value & 0xFFU));
+        poke16(address, value);
     }
 
     void poke8(std::uint32_t address, std::uint8_t value) {
@@ -62,8 +60,9 @@ public:
     }
 
     [[nodiscard]] std::uint16_t peek16(std::uint32_t address) const {
-        return (static_cast<std::uint16_t>(load_byte(address)) << 8) |
-               static_cast<std::uint16_t>(load_byte(address + 1U));
+        return static_cast<std::uint16_t>(
+            (static_cast<std::uint32_t>(load_byte(address)) << 8) |
+            static_cast<std::uint32_t>(load_byte(address + 1U)));
     }
 
 private:
