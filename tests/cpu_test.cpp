@@ -807,7 +807,7 @@ TEST_F(CpuTest, AddqByteToAddressRegisterThrowsUnsupportedInstruction) {
 
 TEST_F(CpuTest, AddqUnsupportedModeThrows) {
     load_program({
-        0x5260U // ADDQ.W #1, -(A0) (mode 4, unsupported)
+        0x5268U // ADDQ.W #1, d16(A0) (mode 5, unsupported)
     });
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
@@ -997,6 +997,120 @@ TEST_F(CpuTest, AddqPostIncrementSequentiallyAdvancesPointer) {
     cpu.step(bus);
     EXPECT_EQ(bus.peek8(0x00000009U), 0x21U);
     EXPECT_EQ(cpu.A(0), 10U);
+}
+
+TEST_F(CpuTest, AddqByteToPreDecrementGeneralRegisterDecrementsByOne) {
+    bus.poke8(0x00000007U, 0x41U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5220U  // ADDQ.B #1, -(A0)
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(0), 8U);
+
+    bus.reads.clear();
+    bus.writes.clear();
+
+    cpu.step(bus);
+    EXPECT_EQ(bus.peek8(0x00000007U), 0x42U);
+    EXPECT_EQ(cpu.A(0), 7U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+
+    // Both read and write must access the decremented address 0x07
+    ASSERT_EQ(bus.reads.size(), 2U);
+    EXPECT_EQ(bus.reads[1].address, 0x00000007U);
+    EXPECT_EQ(bus.reads[1].size, 8U);
+
+    ASSERT_EQ(bus.writes.size(), 1U);
+    EXPECT_EQ(bus.writes[0].address, 0x00000007U);
+    EXPECT_EQ(bus.writes[0].value, 0x42U);
+    EXPECT_EQ(bus.writes[0].size, 8U);
+}
+
+TEST_F(CpuTest, AddqByteToPreDecrementStackPointerDecrementsByTwo) {
+    bus.poke8(kDefaultSp - 2U, 0x41U);
+    load_program({
+        0x5227U // ADDQ.B #1, -(A7)
+    });
+
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek8(kDefaultSp - 2U), 0x42U);
+    EXPECT_EQ(cpu.A(7), kDefaultSp - 2U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, AddqWordToPreDecrementDecrementsByTwo) {
+    bus.poke16(0x00000006U, 0x1234U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5260U  // ADDQ.W #1, -(A0)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek16(0x00000006U), 0x1235U);
+    EXPECT_EQ(cpu.A(0), 6U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, AddqLongToPreDecrementDecrementsByFour) {
+    bus.poke16(0x00000004U, 0x0001U);
+    bus.poke16(0x00000006U, 0xFFFFU);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x52A0U  // ADDQ.L #1, -(A0)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek16(0x00000004U), 0x0002U);
+    EXPECT_EQ(bus.peek16(0x00000006U), 0x0000U);
+    EXPECT_EQ(cpu.A(0), 4U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, SubqByteToPreDecrementSetsFlagsAndStillDecrements) {
+    bus.poke8(0x00000007U, 0x05U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5B20U  // SUBQ.B #5, -(A0)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek8(0x00000007U), 0x00U);
+    EXPECT_EQ(cpu.A(0), 7U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, AddqPreDecrementSequentiallyStepsBackward) {
+    bus.poke8(0x00000007U, 0x10U);
+    bus.poke8(0x00000006U, 0x20U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x5220U, // ADDQ.B #1, -(A0)
+        0x5220U  // ADDQ.B #1, -(A0)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    EXPECT_EQ(bus.peek8(0x00000007U), 0x11U);
+    EXPECT_EQ(cpu.A(0), 7U);
+
+    cpu.step(bus);
+    EXPECT_EQ(bus.peek8(0x00000006U), 0x21U);
+    EXPECT_EQ(cpu.A(0), 6U);
 }
 
 TEST_F(CpuTest, SccAndDbccOpcodeSpaceDoesNotEnterAddq) {

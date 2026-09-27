@@ -228,7 +228,7 @@ void Cpu::step(Bus &bus) {
     } else if ((instr & addq_subq_mask) == addq_subq_pattern &&
                (instr & 0x00C0U) != 0x00C0U) {
         std::uint8_t mode = (instr >> 3) & 0x07;
-        if (mode > 3) {
+        if (mode > 4) {
             throw UnsupportedInstruction{instr};
         }
         bool is_addq = !(instr & 0x0100U);
@@ -250,7 +250,19 @@ void Cpu::step(Bus &bus) {
         }
         auto size = decode_size((instr & 0x00C0) >> 6);
         std::uint32_t size_mask = get_size_mask(size);
-        if (mode == 0b010 || mode == 0b011) {
+        if (mode == 0b010 || mode == 0b011 || mode == 0b100) {
+            const std::uint32_t step = std::invoke([&]() -> std::uint32_t {
+                switch (size) {
+                    case OperandSize::byte: return (index == 7) ? 2U : 1U;
+                    case OperandSize::word: return 2U;
+                    case OperandSize::long_word: return 4U;
+                }
+                return 0U;
+            });
+            if (mode == 0b100) {
+                A_[index] -= step;
+            }
+
             const std::uint32_t address = A_[index];
 
             std::uint32_t destination = std::invoke([&]() -> std::uint32_t {
@@ -275,14 +287,6 @@ void Cpu::step(Bus &bus) {
                     break;
             }
             if (mode == 0b011) {
-                const std::uint32_t step = std::invoke([&]() -> std::uint32_t {
-                    switch (size) {
-                        case OperandSize::byte: return (index == 7) ? 2U : 1U;
-                        case OperandSize::word: return 2U;
-                        case OperandSize::long_word: return 4U;
-                    }
-                    return 0U;
-                });
                 A_[index] += step;
             }
         } else {
