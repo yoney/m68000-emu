@@ -154,6 +154,41 @@ void write_long(Bus &bus, std::uint32_t address, std::uint32_t value) {
     bus.write16(address + 2U, static_cast<std::uint16_t>(value & 0xFFFFU));
 }
 
+[[nodiscard]] std::uint32_t address_step(Cpu::OperandSize size,
+                                         std::uint8_t index) {
+    switch (size) {
+        case Cpu::OperandSize::byte: return index == 7 ? 2U : 1U;
+        case Cpu::OperandSize::word: return 2U;
+        case Cpu::OperandSize::long_word: return 4U;
+    }
+    return 0U;
+}
+
+[[nodiscard]] std::uint32_t read_memory(Bus &bus, std::uint32_t address,
+                                        Cpu::OperandSize size) {
+    switch (size) {
+        case Cpu::OperandSize::byte: return bus.read8(address);
+        case Cpu::OperandSize::word: return bus.read16(address);
+        case Cpu::OperandSize::long_word: return read_long(bus, address);
+    }
+    return 0;
+}
+
+void write_memor(Bus &bus, std::uint32_t address, Cpu::OperandSize size,
+                 std::uint32_t value) {
+    switch (size) {
+        case Cpu::OperandSize::byte:
+            bus.write8(address, static_cast<std::uint8_t>(value));
+            break;
+        case Cpu::OperandSize::word:
+            bus.write16(address, static_cast<std::uint16_t>(value));
+            break;
+        case Cpu::OperandSize::long_word:
+            write_long(bus, address, value);
+            break;
+    }
+}
+
 } // namespace
 
 void Cpu::reset(Bus &bus) {
@@ -251,43 +286,17 @@ void Cpu::step(Bus &bus) {
         auto size = decode_size((instr & 0x00C0) >> 6);
         std::uint32_t size_mask = get_size_mask(size);
         if (mode == 0b010 || mode == 0b011 || mode == 0b100) {
-            const std::uint32_t step = std::invoke([&]() -> std::uint32_t {
-                switch (size) {
-                    case OperandSize::byte: return (index == 7) ? 2U : 1U;
-                    case OperandSize::word: return 2U;
-                    case OperandSize::long_word: return 4U;
-                }
-                return 0U;
-            });
             if (mode == 0b100) {
-                A_[index] -= step;
+                A_[index] -= address_step(size, index);
             }
 
             const std::uint32_t address = A_[index];
-
-            std::uint32_t destination = std::invoke([&]() -> std::uint32_t {
-                switch (size) {
-                    case OperandSize::byte: return bus.read8(address);
-                    case OperandSize::word: return bus.read16(address);
-                    case OperandSize::long_word: return read_long(bus, address);
-                }
-                return 0;
-            });
+            std::uint32_t destination = read_memory(bus, address, size);
             auto value = execute_quick_arithmetic(destination, quick_data, size,
                                                   is_addq);
-            switch (size) {
-                case OperandSize::byte:
-                    bus.write8(address, static_cast<std::uint8_t>(value));
-                    break;
-                case OperandSize::word:
-                    bus.write16(address, static_cast<std::uint16_t>(value));
-                    break;
-                case OperandSize::long_word:
-                    write_long(bus, address, value);
-                    break;
-            }
+            write_memor(bus, address, size, value);
             if (mode == 0b011) {
-                A_[index] += step;
+                A_[index] += address_step(size, index);
             }
         } else {
             auto value =
