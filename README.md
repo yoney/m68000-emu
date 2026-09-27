@@ -23,3 +23,7 @@ cmake --build build
 ```bash
 ctest --test-dir build --output-on-failure
 ```
+
+## References
+
+- [Motorola M68000 Family Programmer's Reference Manual (M68000PRM)](https://www.nxp.com/docs/en/reference-manual/M68000PRM.pdf) — Canonical reference for instruction encodings, addressing modes, and execution semantics.
