@@ -807,7 +807,7 @@ TEST_F(CpuTest, AddqByteToAddressRegisterThrowsUnsupportedInstruction) {
 
 TEST_F(CpuTest, AddqUnsupportedModeThrows) {
     load_program({
-        0x5268U // ADDQ.W #1, d16(A0) (mode 5, unsupported)
+        0x5270U // ADDQ.W #1, 0(A0, D0) (mode 6, unsupported)
     });
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
@@ -1111,6 +1111,112 @@ TEST_F(CpuTest, AddqPreDecrementSequentiallyStepsBackward) {
     cpu.step(bus);
     EXPECT_EQ(bus.peek8(0x00000006U), 0x21U);
     EXPECT_EQ(cpu.A(0), 6U);
+}
+
+TEST_F(CpuTest, AddqByteToAddressRegisterIndirectWithPositiveDisplacement) {
+    bus.poke8(0x0000000CU, 0x10U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5228U, // ADDQ.B #1, 4(A0)
+        0x0004U  // displacement +4
+    });
+
+    cpu.step(bus); // A0 = 8
+    EXPECT_EQ(cpu.A(0), 8U);
+
+    bus.reads.clear();
+    bus.writes.clear();
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus); // ADDQ.B #1, 4(A0)
+
+    EXPECT_EQ(bus.peek8(0x0000000CU), 0x11U); // 8 + 4 = 12 (0x0C)
+    EXPECT_EQ(cpu.A(0), 8U);                  // A0 must not be modified
+    EXPECT_EQ(cpu.pc(), initial_pc + 4U); // PC advances past opcode + extension
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+
+    ASSERT_EQ(bus.reads.size(), 3U);
+    EXPECT_EQ(bus.reads[0].address, initial_pc); // Opcode fetch
+    EXPECT_EQ(bus.reads[0].size, 16U);
+    EXPECT_EQ(bus.reads[1].address, initial_pc + 2U); // Extension fetch
+    EXPECT_EQ(bus.reads[1].size, 16U);
+    EXPECT_EQ(bus.reads[2].address, 0x0000000CU); // Operand read
+    EXPECT_EQ(bus.reads[2].size, 8U);
+
+    ASSERT_EQ(bus.writes.size(), 1U);
+    EXPECT_EQ(bus.writes[0].address, 0x0000000CU); // Operand write
+    EXPECT_EQ(bus.writes[0].value, 0x11U);
+    EXPECT_EQ(bus.writes[0].size, 8U);
+}
+
+TEST_F(CpuTest, AddqWordToAddressRegisterIndirectWithNegativeDisplacement) {
+    bus.poke16(0x00000006U, 0x1234U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5268U, // ADDQ.W #1, -2(A0)
+        0xFFFEU  // displacement -2
+    });
+
+    cpu.step(bus); // A0 = 8
+    cpu.step(bus); // ADDQ.W #1, -2(A0) -> address 6
+
+    EXPECT_EQ(bus.peek16(0x00000006U), 0x1235U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, AddqLongToAddressRegisterIndirectWithDisplacement) {
+    bus.poke16(0x0000000AU, 0x0001U);
+    bus.poke16(0x0000000CU, 0xFFFFU);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x52A8U, // ADDQ.L #1, 2(A0)
+        0x0002U  // displacement +2 -> address 10 (0x0A)
+    });
+
+    cpu.step(bus); // A0 = 8
+    cpu.step(bus); // ADDQ.L #1, 2(A0)
+
+    EXPECT_EQ(bus.peek16(0x0000000AU), 0x0002U);
+    EXPECT_EQ(bus.peek16(0x0000000CU), 0x0000U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_FALSE(flag_z());
+}
+
+TEST_F(CpuTest,
+       SubqByteToAddressRegisterIndirectWithNegativeDisplacementSetsFlags) {
+    bus.poke8(0x00000004U, 0x05U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5B28U, // SUBQ.B #5, -4(A0)
+        0xFFFCU  // displacement -4 -> address 4
+    });
+
+    cpu.step(bus); // A0 = 8
+    cpu.step(bus); // SUBQ.B #5, -4(A0)
+
+    EXPECT_EQ(bus.peek8(0x00000004U), 0x00U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, AddqWordToAddressRegisterIndirectWithZeroDisplacement) {
+    bus.poke16(0x00000008U, 0x2000U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5268U, // ADDQ.W #1, 0(A0)
+        0x0000U  // displacement 0
+    });
+
+    cpu.step(bus); // A0 = 8
+    cpu.step(bus); // ADDQ.W #1, 0(A0)
+
+    EXPECT_EQ(bus.peek16(0x00000008U), 0x2001U);
+    EXPECT_EQ(cpu.A(0), 8U);
 }
 
 TEST_F(CpuTest, SccAndDbccOpcodeSpaceDoesNotEnterAddq) {

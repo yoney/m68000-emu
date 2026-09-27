@@ -174,8 +174,8 @@ void write_long(Bus &bus, std::uint32_t address, std::uint32_t value) {
     return 0;
 }
 
-void write_memor(Bus &bus, std::uint32_t address, Cpu::OperandSize size,
-                 std::uint32_t value) {
+void write_memory(Bus &bus, std::uint32_t address, Cpu::OperandSize size,
+                  std::uint32_t value) {
     switch (size) {
         case Cpu::OperandSize::byte:
             bus.write8(address, static_cast<std::uint8_t>(value));
@@ -263,7 +263,7 @@ void Cpu::step(Bus &bus) {
     } else if ((instr & addq_subq_mask) == addq_subq_pattern &&
                (instr & 0x00C0U) != 0x00C0U) {
         std::uint8_t mode = (instr >> 3) & 0x07;
-        if (mode > 4) {
+        if (mode > 5) {
             throw UnsupportedInstruction{instr};
         }
         bool is_addq = !(instr & 0x0100U);
@@ -285,16 +285,23 @@ void Cpu::step(Bus &bus) {
         }
         auto size = decode_size((instr & 0x00C0) >> 6);
         std::uint32_t size_mask = get_size_mask(size);
-        if (mode == 0b010 || mode == 0b011 || mode == 0b100) {
+        if (mode == 0b010 || mode == 0b011 || mode == 0b100 || mode == 0b101) {
             if (mode == 0b100) {
                 A_[index] -= address_step(size, index);
             }
 
-            const std::uint32_t address = A_[index];
+            std::uint32_t address = A_[index];
+            if (mode == 0b101) {
+                std::uint16_t displacement = bus.read16(pc_);
+                pc_ += 2;
+                address = add_displacement(
+                    address, static_cast<std::int16_t>(displacement));
+            }
+
             std::uint32_t destination = read_memory(bus, address, size);
             auto value = execute_quick_arithmetic(destination, quick_data, size,
                                                   is_addq);
-            write_memor(bus, address, size, value);
+            write_memory(bus, address, size, value);
             if (mode == 0b011) {
                 A_[index] += address_step(size, index);
             }
