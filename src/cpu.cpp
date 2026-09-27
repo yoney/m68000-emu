@@ -2,8 +2,6 @@
 
 #include "m68000/bus.hpp"
 
-#include <cassert>
-
 namespace m68000 {
 
 namespace {
@@ -318,56 +316,18 @@ void Cpu::execute_addq_subq(Bus &bus, std::uint16_t opcode) {
         }
         return;
     }
+
     auto size = decode_size((opcode & 0x00C0) >> 6);
     std::uint32_t size_mask = get_size_mask(size);
     if (mode == 0b010 || mode == 0b011 || mode == 0b100 || mode == 0b101 ||
         mode == 0b110 || mode == 0b111) {
-        if (mode == 0b100) {
-            A_[index] -= address_step(size, index);
-        }
-
-        std::uint32_t address = A_[index];
-        if (mode == 0b110) {
-            std::uint16_t extension = bus.read16(pc_);
-            pc_ += 2U;
-            std::uint8_t displacement = extension & 0x00FFU;
-            assert((extension & 0x0700U) == 0);
-            std::uint8_t index_reg = (extension & 0x7000U) >> 12;
-            bool use_low_word = (extension & 0x0800) == 0;
-            auto &R = (extension & 0x8000U) ? A_ : D_;
-            const std::int32_t index_val =
-                use_low_word ? static_cast<std::int32_t>(
-                                   static_cast<std::int16_t>(R[index_reg]))
-                             : static_cast<std::int32_t>(R[index_reg]);
-            address = add_displacement(address, index_val);
-            address = add_displacement(address,
-                                       static_cast<std::int8_t>(displacement));
-        }
-        if (mode == 0b101) {
-            std::uint16_t displacement = bus.read16(pc_);
-            pc_ += 2U;
-            address = add_displacement(address,
-                                       static_cast<std::int16_t>(displacement));
-        }
-        if (mode == 0b111) {
-            if (index == 0) {
-                address = static_cast<std::uint32_t>(
-                    static_cast<std::int16_t>(bus.read16(pc_)));
-                pc_ += 2U;
-            } else if (index == 1) {
-                address = read_long(bus, pc_);
-                pc_ += 4U;
-            } else {
-                throw UnsupportedInstruction{opcode};
-            }
-        }
-
-        std::uint32_t destination = read_memory(bus, address, size);
+        auto resolved = resolve_memory_address(bus, opcode, mode, index, size);
+        std::uint32_t destination = read_memory(bus, resolved.address, size);
         auto value =
             execute_quick_arithmetic(destination, quick_data, size, is_addq);
-        write_memory(bus, address, size, value);
-        if (mode == 0b011) {
-            A_[index] += address_step(size, index);
+        write_memory(bus, resolved.address, size, value);
+        if (resolved.post_increment) {
+            A_[index] += resolved.post_increment;
         }
     } else {
         auto value =
@@ -417,6 +377,66 @@ void Cpu::execute_moveq(std::uint16_t opcode) {
     } else if (immediate < 0) {
         status_ |= negative_flag;
     }
+}
+
+Cpu::ResolvedAddress Cpu::resolve_memory_address(Bus &bus, std::uint16_t opcode,
+                                                 std::uint8_t mode,
+                                                 std::uint8_t address_register,
+                                                 OperandSize size) {
+    ResolvedAddress resolved{};
+    switch (mode) {
+        case 0b010: resolved.address = A_[address_register]; break;
+        case 0b011: {
+            resolved.address = A_[address_register];
+            resolved.post_increment = address_step(size, address_register);
+            break;
+        }
+        case 0b100: {
+            A_[address_register] -= address_step(size, address_register);
+            resolved.address = A_[address_register];
+            break;
+        }
+        case 0b101: {
+            std::uint16_t displacement = bus.read16(pc_);
+            pc_ += 2U;
+            resolved.address = add_displacement(
+                A_[address_register], static_cast<std::int16_t>(displacement));
+            break;
+        }
+        case 0b110: {
+            std::uint16_t extension = bus.read16(pc_);
+            pc_ += 2U;
+            std::uint8_t displacement = extension & 0x00FFU;
+            std::uint8_t index_reg = (extension & 0x7000U) >> 12;
+            bool use_low_word = (extension & 0x0800) == 0;
+            auto &R = (extension & 0x8000U) ? A_ : D_;
+            const std::int32_t index_val =
+                use_low_word ? static_cast<std::int32_t>(
+                                   static_cast<std::int16_t>(R[index_reg]))
+                             : static_cast<std::int32_t>(R[index_reg]);
+            resolved.address =
+                add_displacement(A_[address_register], index_val);
+            resolved.address = add_displacement(
+                resolved.address, static_cast<std::int8_t>(displacement));
+            break;
+        }
+        case 0b111: {
+            if (address_register == 0) {
+                resolved.address = static_cast<std::uint32_t>(
+                    static_cast<std::int16_t>(bus.read16(pc_)));
+                pc_ += 2U;
+            } else if (address_register == 1) {
+                resolved.address = read_long(bus, pc_);
+                pc_ += 4U;
+            } else {
+                throw UnsupportedInstruction{opcode};
+            }
+            break;
+        }
+        default: throw UnsupportedInstruction{opcode};
+    }
+
+    return resolved;
 }
 
 } // namespace m68000

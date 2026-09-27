@@ -41,11 +41,19 @@ public:
     };
 
 private:
+    struct ResolvedAddress {
+        std::uint32_t address{0U};
+        std::uint32_t post_increment{0U};
+    };
+
     [[nodiscard]] bool condition_true(std::uint8_t condition) const;
     [[nodiscard]] std::uint32_t
     execute_quick_arithmetic(std::uint32_t destination,
                              std::uint32_t quick_data, OperandSize size,
                              bool is_addq);
+    [[nodiscard]] ResolvedAddress
+    resolve_memory_address(Bus &bus, std::uint16_t opcode, std::uint8_t mode,
+                           std::uint8_t address_register, OperandSize size);
     void execute_addq_subq(Bus &bus, std::uint16_t opcode);
     void execute_branch(Bus &bus, std::uint16_t opcode);
     void execute_moveq(std::uint16_t opcode);
