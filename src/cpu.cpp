@@ -386,6 +386,10 @@ void Cpu::execute_moveq(std::uint16_t opcode) {
     }
 }
 
+// CLR.<size> <ea> - Clear an Operand
+// Destination: Data alterable addressing modes (Dn and alterable memory modes).
+// An direct mode is illegal.
+// Condition codes: N = 0, Z = 1, V = 0, C = 0, X is unaffected.
 void Cpu::execute_clr(Bus &bus, std::uint16_t opcode) {
     auto size = decode_size((opcode & 0x00C0U) >> 6);
     std::uint8_t index = opcode & 0x0007U;
@@ -395,7 +399,11 @@ void Cpu::execute_clr(Bus &bus, std::uint16_t opcode) {
         D_[index] &= ~size_mask;
     } else {
         auto resolved = resolve_memory_address(bus, opcode, mode, index, size);
-        write_memory(bus, resolved.address, size, 0);
+        // On physical MC68000 hardware, CLR performs an unneeded read cycle on
+        // memory destinations before writing zero (read-modify-write bus
+        // behavior).
+        (void)read_memory(bus, resolved.address, size);
+        write_memory(bus, resolved.address, size, 0U);
         if (resolved.post_increment) {
             A_[index] += resolved.post_increment;
         }

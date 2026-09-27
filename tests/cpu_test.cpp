@@ -1525,18 +1525,32 @@ TEST_F(CpuTest, ClrAddressRegisterDirectThrowsUnsupportedInstruction) {
 }
 
 TEST_F(CpuTest, ClrByteMemoryIndirect) {
-    bus.poke8(0x00000008U, 0xFFU);
+    constexpr std::uint32_t target_address = 0x00000008U;
+    bus.poke8(target_address, 0xFFU);
     load_program({
         0x5088U, // ADDQ.L #8, A0
         0x4210U  // CLR.B (A0)
     });
 
-    cpu.step(bus);
-    cpu.step(bus);
+    cpu.step(bus); // ADDQ.L #8, A0
 
-    EXPECT_EQ(bus.peek8(0x00000008U), 0x00U);
+    bus.reads.clear();
+    bus.writes.clear();
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus); // CLR.B (A0)
+
+    EXPECT_EQ(bus.peek8(target_address), 0x00U);
     EXPECT_EQ(cpu.A(0), 8U);
     EXPECT_TRUE(flag_z());
+
+    ASSERT_EQ(bus.reads.size(), 2U);
+    EXPECT_EQ(bus.reads[0].address, initial_pc);     // opcode
+    EXPECT_EQ(bus.reads[1].address, target_address); // old value
+
+    ASSERT_EQ(bus.writes.size(), 1U);
+    EXPECT_EQ(bus.writes[0].address, target_address);
+    EXPECT_EQ(bus.writes[0].value, 0U);
 }
 
 TEST_F(CpuTest, ClrWordPostIncrementClearsMemoryAndAdvancesAddress) {
