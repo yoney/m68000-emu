@@ -807,7 +807,7 @@ TEST_F(CpuTest, AddqByteToAddressRegisterThrowsUnsupportedInstruction) {
 
 TEST_F(CpuTest, AddqUnsupportedModeThrows) {
     load_program({
-        0x5258U // ADDQ.W #1, (A0)+ (mode 3, unsupported)
+        0x5260U // ADDQ.W #1, -(A0) (mode 4, unsupported)
     });
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
@@ -882,6 +882,121 @@ TEST_F(CpuTest, AddqWordToAddressRegisterIndirectA0) {
 
     cpu.step(bus);
     EXPECT_EQ(bus.peek16(0x00000008U), 0x1001U);
+}
+
+TEST_F(CpuTest, AddqByteToPostIncrementGeneralRegisterIncrementsByOne) {
+    bus.poke8(0x00000008U, 0x41U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5218U  // ADDQ.B #1, (A0)+
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(0), 8U);
+
+    bus.reads.clear();
+    bus.writes.clear();
+
+    cpu.step(bus);
+    EXPECT_EQ(bus.peek8(0x00000008U), 0x42U);
+    EXPECT_EQ(cpu.A(0), 9U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+
+    // Both read and write must access original address 0x08, not
+    // post-incremented 0x09
+    ASSERT_EQ(bus.reads.size(), 2U);
+    EXPECT_EQ(bus.reads[1].address, 0x00000008U);
+    EXPECT_EQ(bus.reads[1].size, 8U);
+
+    ASSERT_EQ(bus.writes.size(), 1U);
+    EXPECT_EQ(bus.writes[0].address, 0x00000008U);
+    EXPECT_EQ(bus.writes[0].value, 0x42U);
+    EXPECT_EQ(bus.writes[0].size, 8U);
+}
+
+TEST_F(CpuTest, AddqByteToPostIncrementStackPointerIncrementsByTwo) {
+    bus.poke8(kDefaultSp, 0x41U);
+    load_program({
+        0x521FU // ADDQ.B #1, (A7)+
+    });
+
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek8(kDefaultSp), 0x42U);
+    EXPECT_EQ(cpu.A(7), kDefaultSp + 2U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, AddqWordToPostIncrementIncrementsByTwo) {
+    bus.poke16(0x00000008U, 0x1234U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5258U  // ADDQ.W #1, (A0)+
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek16(0x00000008U), 0x1235U);
+    EXPECT_EQ(cpu.A(0), 10U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, AddqLongToPostIncrementIncrementsByFour) {
+    bus.poke16(0x00000008U, 0x0001U);
+    bus.poke16(0x0000000AU, 0xFFFFU);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5298U  // ADDQ.L #1, (A0)+
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek16(0x00000008U), 0x0002U);
+    EXPECT_EQ(bus.peek16(0x0000000AU), 0x0000U);
+    EXPECT_EQ(cpu.A(0), 12U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, SubqByteToPostIncrementSetsFlagsAndStillIncrements) {
+    bus.poke8(0x00000008U, 0x05U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5B18U  // SUBQ.B #5, (A0)+
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek8(0x00000008U), 0x00U);
+    EXPECT_EQ(cpu.A(0), 9U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, AddqPostIncrementSequentiallyAdvancesPointer) {
+    bus.poke8(0x00000008U, 0x10U);
+    bus.poke8(0x00000009U, 0x20U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x5218U, // ADDQ.B #1, (A0)+
+        0x5218U  // ADDQ.B #1, (A0)+
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    EXPECT_EQ(bus.peek8(0x00000008U), 0x11U);
+    EXPECT_EQ(cpu.A(0), 9U);
+
+    cpu.step(bus);
+    EXPECT_EQ(bus.peek8(0x00000009U), 0x21U);
+    EXPECT_EQ(cpu.A(0), 10U);
 }
 
 TEST_F(CpuTest, SccAndDbccOpcodeSpaceDoesNotEnterAddq) {
