@@ -1640,3 +1640,287 @@ TEST_F(CpuTest, ClrReservedSizeThrowsUnsupportedInstruction) {
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
+
+TEST_F(CpuTest, TstByteZeroSetsZeroAndClearsNegative) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0x4A00U  // TST.B D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, TstBytePositiveClearsZeroAndNegative) {
+    load_program({
+        0x707FU, // MOVEQ #127, D0
+        0x4A00U  // TST.B D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0x7FU);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, TstByteNegativeSetsNegativeAndClearsZero) {
+    load_program({
+        0x7080U, // MOVEQ #-128, D0 -> 0xFFFFFF80
+        0x4A00U  // TST.B D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0xFFFFFF80U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, TstByteIgnoresUpperBits) {
+    load_program({
+        0x70FFU, // MOVEQ #-1, D0 -> 0xFFFFFFFF
+        0x4200U, // CLR.B D0     -> 0xFFFFFF00
+        0x4A00U  // TST.B D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0xFFFFFF00U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, TstWordZeroSetsZeroAndClearsNegative) {
+    load_program({
+        0x7200U, // MOVEQ #0, D1
+        0x4A41U  // TST.W D1
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, TstWordPositiveClearsZeroAndNegative) {
+    load_program({
+        0x7201U, // MOVEQ #1, D1
+        0x4A41U  // TST.W D1
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, TstWordNegativeSetsNegativeAndClearsZero) {
+    load_program({
+        0x72FFU, // MOVEQ #-1, D1 -> 0xFFFFFFFF
+        0x4A41U  // TST.W D1
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_n());
+}
+
+TEST_F(CpuTest, TstWordIgnoresUpperWord) {
+    load_program({
+        0x72FFU, // MOVEQ #-1, D1 -> 0xFFFFFFFF
+        0x4241U, // CLR.W D1     -> 0xFFFF0000
+        0x4A41U  // TST.W D1
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(1), 0xFFFF0000U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, TstLongZeroSetsZeroAndClearsNegative) {
+    load_program({
+        0x7400U, // MOVEQ #0, D2
+        0x4A82U  // TST.L D2
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, TstLongPositiveClearsZeroAndNegative) {
+    load_program({
+        0x742AU, // MOVEQ #42, D2
+        0x4A82U  // TST.L D2
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, TstLongNegativeSetsNegativeAndClearsZero) {
+    load_program({
+        0x74FFU, // MOVEQ #-1, D2 -> 0xFFFFFFFF
+        0x4A82U  // TST.L D2
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_n());
+}
+
+TEST_F(CpuTest, TstPreservesExtendFlag) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0x5380U, // SUBQ.L #1, D0 (sets X, N, C flags)
+        0x7200U, // MOVEQ #0, D1 (preserves X)
+        0x4A81U  // TST.L D1
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    EXPECT_TRUE(flag_x());
+
+    cpu.step(bus); // MOVEQ #0, D1
+    EXPECT_TRUE(flag_x());
+
+    cpu.step(bus); // TST.L D1
+    EXPECT_TRUE(flag_z());
+    EXPECT_TRUE(flag_x()); // X flag must be preserved
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, TstAddressRegisterDirectThrowsUnsupportedInstruction) {
+    load_program({
+        0x4A48U // TST.W A0 (mode 1 is illegal on MC68000)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, TstMemoryIndirectDoesNotModifyMemoryOrRegisters) {
+    constexpr std::uint32_t target_address = 0x00000008U;
+    bus.poke8(target_address, 0x80U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4A10U  // TST.B (A0)
+    });
+
+    cpu.step(bus); // ADDQ.L #8, A0
+
+    bus.reads.clear();
+    bus.writes.clear();
+
+    cpu.step(bus); // TST.B (A0)
+
+    EXPECT_EQ(bus.peek8(target_address), 0x80U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+
+    EXPECT_TRUE(bus.writes.empty()); // TST must not write to memory
+}
+
+TEST_F(CpuTest, TstPostIncrementAdvancesAddress) {
+    bus.poke16(0x00000008U, 0x0000U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4A58U  // TST.W (A0)+
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.A(0), 10U);
+    EXPECT_TRUE(flag_z());
+}
+
+TEST_F(CpuTest, TstPreDecrementDecrementsAddress) {
+    bus.poke16(0x00000006U, 0x1234U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4A60U  // TST.W -(A0)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.A(0), 6U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, TstDisplacement) {
+    bus.poke8(0x0000000CU, 0xFFU);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4A28U, // TST.B 4(A0)
+        0x0004U  // displacement +4
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_TRUE(flag_n());
+}
+
+TEST_F(CpuTest, TstAbsoluteAddress) {
+    bus.poke16(0x2000U, 0x0000U);
+    load_program({
+        0x4A78U, // TST.W ($2000).W
+        0x2000U  // absolute address
+    });
+
+    cpu.step(bus);
+
+    EXPECT_TRUE(flag_z());
+}
+
+TEST_F(CpuTest, TstImmediateDestinationThrowsUnsupportedInstruction) {
+    load_program({
+        0x4A7CU // TST.W #5 (immediate is not alterable on MC68000)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, TstReservedSizeThrowsUnsupportedInstruction) {
+    load_program({
+        0x4AC0U // TST opcode pattern with reserved size 11 (TAS space)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
