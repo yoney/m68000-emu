@@ -720,10 +720,81 @@ TEST_F(CpuTest, AddqByteToAddressRegisterThrowsUnsupportedInstruction) {
 
 TEST_F(CpuTest, AddqUnsupportedModeThrows) {
     load_program({
-        0x5250U // ADDQ.W #1, (A0) (mode 2, memory mode)
+        0x5258U // ADDQ.W #1, (A0)+ (mode 3, unsupported)
     });
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, AddqByteToMemoryIndirect) {
+    bus.memory8[kDefaultSp] = 0x41U;
+    load_program({
+        0x5217U // ADDQ.B #1, (A7)
+    });
+
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.read8(kDefaultSp), 0x42U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+    EXPECT_FALSE(flag_v());
+}
+
+TEST_F(CpuTest, AddqWordToMemoryIndirect) {
+    bus.memory16[kDefaultSp] = 0x1234U;
+    load_program({
+        0x5257U // ADDQ.W #1, (A7)
+    });
+
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.read16(kDefaultSp), 0x1235U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, AddqLongToMemoryIndirect) {
+    bus.memory16[kDefaultSp] = 0x0001U;
+    bus.memory16[kDefaultSp + 2U] = 0xFFFFU;
+    load_program({
+        0x5297U // ADDQ.L #1, (A7)
+    });
+
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.read16(kDefaultSp), 0x0002U);
+    EXPECT_EQ(bus.read16(kDefaultSp + 2U), 0x0000U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, SubqByteToMemoryIndirectSetsZeroFlag) {
+    bus.memory8[kDefaultSp] = 0x05U;
+    load_program({
+        0x5B17U // SUBQ.B #5, (A7)
+    });
+
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.read8(kDefaultSp), 0x00U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, AddqWordToAddressRegisterIndirectA0) {
+    bus.memory16[0x00000008U] = 0x1000U;
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5250U  // ADDQ.W #1, (A0)
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(0), 8U);
+
+    cpu.step(bus);
+    EXPECT_EQ(bus.read16(0x00000008U), 0x1001U);
 }
 
 TEST_F(CpuTest, SccAndDbccOpcodeSpaceDoesNotEnterAddq) {

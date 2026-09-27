@@ -2,6 +2,8 @@
 
 #include "m68000/bus.hpp"
 
+#include <functional>
+
 namespace m68000 {
 
 namespace {
@@ -140,6 +142,18 @@ add_displacement(std::uint32_t address, std::int32_t displacement) noexcept {
     }
 }
 
+[[nodiscard]] std::uint32_t read_long(Bus &bus, std::uint32_t address) {
+    std::uint32_t value = bus.read16(address);
+    value <<= 16;
+    value |= bus.read16(address + 2U);
+    return value;
+}
+
+void write_long(Bus &bus, std::uint32_t address, std::uint32_t value) {
+    bus.write16(address, static_cast<std::uint16_t>(value >> 16));
+    bus.write16(address + 2U, static_cast<std::uint16_t>(value & 0xFFFFU));
+}
+
 } // namespace
 
 void Cpu::reset(Bus &bus) {
@@ -214,7 +228,7 @@ void Cpu::step(Bus &bus) {
     } else if ((instr & addq_subq_mask) == addq_subq_pattern &&
                (instr & 0x00C0U) != 0x00C0U) {
         std::uint8_t mode = (instr >> 3) & 0x07;
-        if (mode > 1) {
+        if (mode > 2) {
             throw UnsupportedInstruction{instr};
         }
         bool is_addq = !(instr & 0x0100U);
@@ -236,10 +250,36 @@ void Cpu::step(Bus &bus) {
         }
         auto size = decode_size((instr & 0x00C0) >> 6);
         std::uint32_t size_mask = get_size_mask(size);
-        auto value =
-            execute_quick_arithmetic(D_[index], quick_data, size, is_addq);
-        D_[index] &= ~size_mask;
-        D_[index] |= value;
+        if (mode == 0b010) {
+            const std::uint32_t address = A_[index];
+
+            std::uint32_t destination = std::invoke([&]() -> std::uint32_t {
+                switch (size) {
+                    case OperandSize::byte: return bus.read8(address);
+                    case OperandSize::word: return bus.read16(address);
+                    case OperandSize::long_word: return read_long(bus, address);
+                }
+                return 0;
+            });
+            auto value = execute_quick_arithmetic(destination, quick_data, size,
+                                                  is_addq);
+            switch (size) {
+                case OperandSize::byte:
+                    bus.write8(address, static_cast<std::uint8_t>(value));
+                    break;
+                case OperandSize::word:
+                    bus.write16(address, static_cast<std::uint16_t>(value));
+                    break;
+                case OperandSize::long_word:
+                    write_long(bus, address, value);
+                    break;
+            }
+        } else {
+            auto value =
+                execute_quick_arithmetic(D_[index], quick_data, size, is_addq);
+            D_[index] &= ~size_mask;
+            D_[index] |= value;
+        }
         return;
     }
 
