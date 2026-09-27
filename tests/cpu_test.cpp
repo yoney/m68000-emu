@@ -807,7 +807,7 @@ TEST_F(CpuTest, AddqByteToAddressRegisterThrowsUnsupportedInstruction) {
 
 TEST_F(CpuTest, AddqUnsupportedModeThrows) {
     load_program({
-        0x5270U // ADDQ.W #1, 0(A0, D0) (mode 6, unsupported)
+        0x5278U // ADDQ.W #1, (xxx).W (mode 7, unsupported)
     });
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
@@ -1217,6 +1217,104 @@ TEST_F(CpuTest, AddqWordToAddressRegisterIndirectWithZeroDisplacement) {
 
     EXPECT_EQ(bus.peek16(0x00000008U), 0x2001U);
     EXPECT_EQ(cpu.A(0), 8U);
+}
+
+TEST_F(CpuTest,
+       AddqByteToAddressRegisterIndirectWithIndexWordAndPositiveDisplacement) {
+    bus.poke8(0x00000016U, 0x41U); // 8 + 10 + 4 = 22 (0x16)
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x720AU, // MOVEQ #10, D1 (D1 becomes 10)
+        0x5230U, // ADDQ.B #1, 4(A0, D1.W)
+        0x1004U  // extension: D1.W, displacement +4
+    });
+
+    cpu.step(bus); // A0 = 8
+    cpu.step(bus); // D1 = 10
+
+    bus.reads.clear();
+    bus.writes.clear();
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus); // ADDQ.B #1, 4(A0, D1.W)
+
+    EXPECT_EQ(bus.peek8(0x00000016U), 0x42U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_EQ(cpu.D(1), 10U);
+    EXPECT_EQ(cpu.pc(), initial_pc + 4U);
+
+    ASSERT_EQ(bus.reads.size(), 3U);
+    EXPECT_EQ(bus.reads[0].address, initial_pc);
+    EXPECT_EQ(bus.reads[0].size, 16U);
+    EXPECT_EQ(bus.reads[1].address, initial_pc + 2U);
+    EXPECT_EQ(bus.reads[1].size, 16U);
+    EXPECT_EQ(bus.reads[2].address, 0x00000016U);
+    EXPECT_EQ(bus.reads[2].size, 8U);
+
+    ASSERT_EQ(bus.writes.size(), 1U);
+    EXPECT_EQ(bus.writes[0].address, 0x00000016U);
+    EXPECT_EQ(bus.writes[0].value, 0x42U);
+    EXPECT_EQ(bus.writes[0].size, 8U);
+}
+
+TEST_F(CpuTest,
+       AddqWordToAddressRegisterIndirectWithIndexLongAndNegativeDisplacement) {
+    bus.poke16(0x00000024U, 0x1234U); // 8 + 32 - 4 = 36 (0x24)
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x7420U, // MOVEQ #32, D2 (D2 becomes 32)
+        0x5270U, // ADDQ.W #1, -4(A0, D2.L)
+        0x28FCU  // extension: D2.L, displacement -4
+    });
+
+    cpu.step(bus); // A0 = 8
+    cpu.step(bus); // D2 = 32
+    cpu.step(bus); // ADDQ.W #1, -4(A0, D2.L)
+
+    EXPECT_EQ(bus.peek16(0x00000024U), 0x1235U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_EQ(cpu.D(2), 32U);
+}
+
+TEST_F(
+    CpuTest,
+    AddqWordToAddressRegisterIndirectWithAddressRegisterIndexWordNegativeSignExtension) {
+    bus.poke16(0x0000000AU, 0x1000U); // 8 + (-2) + 4 = 10 (0x0A)
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x5549U, // SUBQ.W #2, A1 (A1 becomes 0xFFFFFFFE, low word -2)
+        0x5270U, // ADDQ.W #1, 4(A0, A1.W)
+        0x9004U  // extension: A1.W, displacement +4
+    });
+
+    cpu.step(bus); // A0 = 8
+    cpu.step(bus); // A1 = 0xFFFFFFFE
+    cpu.step(bus); // ADDQ.W #1, 4(A0, A1.W)
+
+    EXPECT_EQ(bus.peek16(0x0000000AU), 0x1001U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_EQ(cpu.A(1), 0xFFFFFFFEU);
+}
+
+TEST_F(CpuTest, SubqByteToAddressRegisterIndirectWithIndexSetsZeroFlag) {
+    bus.poke8(0x00000008U, 0x05U); // 8 + 0 + 0 = 8
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
+        0x7000U, // MOVEQ #0, D0 (D0 becomes 0)
+        0x5B30U, // SUBQ.B #5, 0(A0, D0.W)
+        0x0000U  // extension: D0.W, displacement 0
+    });
+
+    cpu.step(bus); // A0 = 8
+    cpu.step(bus); // D0 = 0
+    cpu.step(bus); // SUBQ.B #5, 0(A0, D0.W)
+
+    EXPECT_EQ(bus.peek8(0x00000008U), 0x00U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_EQ(cpu.D(0), 0U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
 }
 
 TEST_F(CpuTest, SccAndDbccOpcodeSpaceDoesNotEnterAddq) {

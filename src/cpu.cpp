@@ -2,6 +2,8 @@
 
 #include "m68000/bus.hpp"
 
+#include <cassert>
+
 namespace m68000 {
 
 namespace {
@@ -299,7 +301,7 @@ std::uint32_t Cpu::execute_quick_arithmetic(std::uint32_t destination,
 
 void Cpu::execute_addq_subq(Bus &bus, std::uint16_t opcode) {
     std::uint8_t mode = (opcode >> 3) & 0x07;
-    if (mode > 5) {
+    if (mode > 6) {
         throw UnsupportedInstruction{opcode};
     }
     bool is_addq = !(opcode & 0x0100U);
@@ -321,12 +323,29 @@ void Cpu::execute_addq_subq(Bus &bus, std::uint16_t opcode) {
     }
     auto size = decode_size((opcode & 0x00C0) >> 6);
     std::uint32_t size_mask = get_size_mask(size);
-    if (mode == 0b010 || mode == 0b011 || mode == 0b100 || mode == 0b101) {
+    if (mode == 0b010 || mode == 0b011 || mode == 0b100 || mode == 0b101 ||
+        mode == 0b110) {
         if (mode == 0b100) {
             A_[index] -= address_step(size, index);
         }
 
         std::uint32_t address = A_[index];
+        if (mode == 0b110) {
+            std::uint16_t extension = bus.read16(pc_);
+            pc_ += 2U;
+            std::uint8_t displacement = extension & 0x00FFU;
+            assert((extension & 0x0700U) == 0);
+            std::uint8_t index = (extension & 0x7000U) >> 12;
+            bool use_low_word = (extension & 0x0800) == 0;
+            auto &R = (extension & 0x8000U) ? A_ : D_;
+            const std::int32_t index_val =
+                use_low_word ? static_cast<std::int32_t>(
+                                   static_cast<std::int16_t>(R[index]))
+                             : static_cast<std::int32_t>(R[index]);
+            address = add_displacement(address, index_val);
+            address = add_displacement(address,
+                                       static_cast<std::int8_t>(displacement));
+        }
         if (mode == 0b101) {
             std::uint16_t displacement = bus.read16(pc_);
             pc_ += 2;
