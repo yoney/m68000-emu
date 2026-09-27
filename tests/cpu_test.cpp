@@ -1447,3 +1447,182 @@ TEST_F(CpuTest, SubqLongSetsBorrowAndExtendOnBorrow) {
     EXPECT_TRUE(flag_c());
     EXPECT_TRUE(flag_x());
 }
+
+TEST_F(CpuTest, ClrByteDataRegisterClearsLowByteAndPreservesUpperBits) {
+    load_program({
+        0x70FFU, // MOVEQ #-1, D0 -> 0xFFFFFFFF
+        0x4200U  // CLR.B D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 0xFFFFFF00U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, ClrWordDataRegisterClearsLowWordAndPreservesUpperWord) {
+    load_program({
+        0x72FFU, // MOVEQ #-1, D1 -> 0xFFFFFFFF
+        0x4241U  // CLR.W D1
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(1), 0xFFFF0000U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, ClrLongDataRegisterClearsEntireRegister) {
+    load_program({
+        0x74FFU, // MOVEQ #-1, D2 -> 0xFFFFFFFF
+        0x4282U  // CLR.L D2
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(2), 0x00000000U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, ClrPreservesExtendFlag) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0x5380U, // SUBQ.L #1, D0 (sets X, N, C flags)
+        0x4280U  // CLR.L D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    EXPECT_TRUE(flag_x());
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.D(0), 0U);
+    EXPECT_TRUE(flag_x()); // X flag must be preserved
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, ClrAddressRegisterDirectThrowsUnsupportedInstruction) {
+    load_program({
+        0x4248U // CLR.W A0 (mode 1 is not alterable data)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, ClrByteMemoryIndirect) {
+    bus.poke8(0x00000008U, 0xFFU);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4210U  // CLR.B (A0)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek8(0x00000008U), 0x00U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_TRUE(flag_z());
+}
+
+TEST_F(CpuTest, ClrWordPostIncrementClearsMemoryAndAdvancesAddress) {
+    bus.poke16(0x00000008U, 0x1234U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4258U  // CLR.W (A0)+
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek16(0x00000008U), 0x0000U);
+    EXPECT_EQ(cpu.A(0), 10U);
+    EXPECT_TRUE(flag_z());
+}
+
+TEST_F(CpuTest, ClrBytePostIncrementStackPointerIncrementsByTwo) {
+    bus.poke8(kDefaultSp, 0xABU);
+    load_program({
+        0x421FU // CLR.B (A7)+
+    });
+
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek8(kDefaultSp), 0x00U);
+    EXPECT_EQ(cpu.A(7), kDefaultSp + 2U);
+    EXPECT_TRUE(flag_z());
+}
+
+TEST_F(CpuTest, ClrPreDecrementDecrementsAddressAndClearsMemory) {
+    bus.poke16(0x00000006U, 0x5678U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4260U  // CLR.W -(A0)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek16(0x00000006U), 0x0000U);
+    EXPECT_EQ(cpu.A(0), 6U);
+    EXPECT_TRUE(flag_z());
+}
+
+TEST_F(CpuTest, ClrDisplacement) {
+    bus.poke8(0x0000000CU, 0xEEU);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4228U, // CLR.B 4(A0)
+        0x0004U  // displacement +4
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek8(0x0000000CU), 0x00U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_TRUE(flag_z());
+}
+
+TEST_F(CpuTest, ClrAbsoluteAddress) {
+    bus.poke16(0x2000U, 0xCAFEU);
+    load_program({
+        0x4278U, // CLR.W ($2000).W
+        0x2000U  // absolute address
+    });
+
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek16(0x2000U), 0x0000U);
+    EXPECT_TRUE(flag_z());
+}
+
+TEST_F(CpuTest, ClrImmediateDestinationThrowsUnsupportedInstruction) {
+    load_program({
+        0x427CU // CLR.W #5 (immediate is not alterable)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, ClrReservedSizeThrowsUnsupportedInstruction) {
+    load_program({
+        0x42C0U // CLR opcode pattern with reserved size 11
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}

@@ -57,6 +57,7 @@ private:
     void execute_addq_subq(Bus &bus, std::uint16_t opcode);
     void execute_branch(Bus &bus, std::uint16_t opcode);
     void execute_moveq(std::uint16_t opcode);
+    void execute_clr(Bus &bus, std::uint16_t opcode);
 
     std::array<std::uint32_t, 8> D_{}; // D0-D7
     std::array<std::uint32_t, 8> A_{}; // A0-A7

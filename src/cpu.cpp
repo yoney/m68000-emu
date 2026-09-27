@@ -117,6 +117,9 @@ constexpr std::uint16_t branch_pattern = 0x6000U;
 constexpr std::uint16_t addq_subq_mask = 0xF000U;
 constexpr std::uint16_t addq_subq_pattern = 0x5000U;
 
+constexpr std::uint16_t clr_mask = 0xFF00U;
+constexpr std::uint16_t clr_pattern = 0x4200U;
+
 [[nodiscard]] constexpr std::uint32_t
 add_displacement(std::uint32_t address, std::int32_t displacement) noexcept {
     return address + static_cast<std::uint32_t>(displacement);
@@ -221,6 +224,10 @@ void Cpu::step(Bus &bus) {
     } else if ((opcode & addq_subq_mask) == addq_subq_pattern &&
                (opcode & 0x00C0U) != 0x00C0U) {
         execute_addq_subq(bus, opcode);
+        return;
+    } else if ((opcode & clr_mask) == clr_pattern &&
+               (opcode & 0x00C0U) != 0x00C0U) {
+        execute_clr(bus, opcode);
         return;
     }
 
@@ -377,6 +384,25 @@ void Cpu::execute_moveq(std::uint16_t opcode) {
     } else if (immediate < 0) {
         status_ |= negative_flag;
     }
+}
+
+void Cpu::execute_clr(Bus &bus, std::uint16_t opcode) {
+    auto size = decode_size((opcode & 0x00C0U) >> 6);
+    std::uint8_t index = opcode & 0x0007U;
+    std::uint8_t mode = (opcode >> 3) & 0x0007U;
+    if (mode == 0) {
+        std::uint32_t size_mask = get_size_mask(size);
+        D_[index] &= ~size_mask;
+    } else {
+        auto resolved = resolve_memory_address(bus, opcode, mode, index, size);
+        write_memory(bus, resolved.address, size, 0);
+        if (resolved.post_increment) {
+            A_[index] += resolved.post_increment;
+        }
+    }
+
+    status_ &= static_cast<std::uint16_t>(~nzvc_flags);
+    status_ |= zero_flag;
 }
 
 Cpu::ResolvedAddress Cpu::resolve_memory_address(Bus &bus, std::uint16_t opcode,
