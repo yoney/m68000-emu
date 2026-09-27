@@ -46,6 +46,9 @@ private:
     execute_quick_arithmetic(std::uint32_t destination,
                              std::uint32_t quick_data, OperandSize size,
                              bool is_addq);
+    void execute_addq_subq(Bus &bus, std::uint16_t opcode);
+    void execute_branch(Bus &bus, std::uint16_t opcode);
+    void execute_moveq(std::uint16_t opcode);
 
     std::array<std::uint32_t, 8> D_{}; // D0-D7
     std::array<std::uint32_t, 8> A_{}; // A0-A7
@@ -54,8 +57,8 @@ private:
 };
 
 struct UnsupportedInstruction : public std::runtime_error {
-    UnsupportedInstruction(std::uint16_t instr)
-        : std::runtime_error{std::format("0x{:04X}", instr)} {}
+    UnsupportedInstruction(std::uint16_t opcode)
+        : std::runtime_error{std::format("0x{:04X}", opcode)} {}
 };
 
 struct UnsupportedCondition : public std::runtime_error {
