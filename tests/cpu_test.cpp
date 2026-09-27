@@ -807,7 +807,7 @@ TEST_F(CpuTest, AddqByteToAddressRegisterThrowsUnsupportedInstruction) {
 
 TEST_F(CpuTest, AddqUnsupportedModeThrows) {
     load_program({
-        0x5278U // ADDQ.W #1, (xxx).W (mode 7, unsupported)
+        0x527AU // ADDQ.W #1, d16(PC) (mode 7, reg 2, non-alterable)
     });
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
@@ -1315,6 +1315,85 @@ TEST_F(CpuTest, SubqByteToAddressRegisterIndirectWithIndexSetsZeroFlag) {
     EXPECT_TRUE(flag_z());
     EXPECT_FALSE(flag_n());
     EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, AddqByteToAbsoluteShortAddress) {
+    bus.poke8(0x2000U, 0x41U);
+    load_program({
+        0x5238U, // ADDQ.B #1, ($2000).W
+        0x2000U  // absolute short address
+    });
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek8(0x2000U), 0x42U);
+    EXPECT_EQ(cpu.pc(), initial_pc + 4U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+
+    ASSERT_EQ(bus.reads.size(), 3U);
+    EXPECT_EQ(bus.reads[0].address, initial_pc);
+    EXPECT_EQ(bus.reads[0].size, 16U);
+    EXPECT_EQ(bus.reads[1].address, initial_pc + 2U);
+    EXPECT_EQ(bus.reads[1].size, 16U);
+    EXPECT_EQ(bus.reads[2].address, 0x2000U);
+    EXPECT_EQ(bus.reads[2].size, 8U);
+
+    ASSERT_EQ(bus.writes.size(), 1U);
+    EXPECT_EQ(bus.writes[0].address, 0x2000U);
+    EXPECT_EQ(bus.writes[0].value, 0x42U);
+    EXPECT_EQ(bus.writes[0].size, 8U);
+}
+
+TEST_F(CpuTest, AddqWordToAbsoluteShortNegativeSignExtension) {
+    bus.poke16(0xFFFF8000U, 0x1234U);
+    load_program({0x5278U, // ADDQ.W #1, ($8000).W (sign-extends to 0xFFFF8000)
+                  0x8000U});
+
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek16(0xFFFF8000U), 0x1235U);
+    EXPECT_FALSE(flag_z());
+}
+
+TEST_F(CpuTest, AddqLongToAbsoluteLongAddress) {
+    bus.poke16(0x00020000U, 0x0001U);
+    bus.poke16(0x00020002U, 0xFFFFU);
+    load_program({
+        0x52B9U, // ADDQ.L #1, ($00020000).L
+        0x0002U, // high word of address
+        0x0000U  // low word of address
+    });
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek16(0x00020000U), 0x0002U);
+    EXPECT_EQ(bus.peek16(0x00020002U), 0x0000U);
+    EXPECT_EQ(cpu.pc(), initial_pc + 6U); // 2 for opcode + 4 for 32-bit address
+    EXPECT_FALSE(flag_z());
+}
+
+TEST_F(CpuTest, SubqByteToAbsoluteShortSetsZeroFlag) {
+    bus.poke8(0x2000U, 0x05U);
+    load_program({0x5B38U, // SUBQ.B #5, ($2000).W
+                  0x2000U});
+
+    cpu.step(bus);
+
+    EXPECT_EQ(bus.peek8(0x2000U), 0x00U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, AddqImmediateDestinationThrowsUnsupportedInstruction) {
+    load_program({
+        0x527CU // ADDQ.W #1, #5 (mode 7, reg 4, immediate is not alterable)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
 
 TEST_F(CpuTest, SccAndDbccOpcodeSpaceDoesNotEnterAddq) {

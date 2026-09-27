@@ -301,9 +301,6 @@ std::uint32_t Cpu::execute_quick_arithmetic(std::uint32_t destination,
 
 void Cpu::execute_addq_subq(Bus &bus, std::uint16_t opcode) {
     std::uint8_t mode = (opcode >> 3) & 0x07;
-    if (mode > 6) {
-        throw UnsupportedInstruction{opcode};
-    }
     bool is_addq = !(opcode & 0x0100U);
     std::uint32_t quick_data = (opcode & 0x0E00U) >> 9;
     if (quick_data == 0) {
@@ -324,7 +321,7 @@ void Cpu::execute_addq_subq(Bus &bus, std::uint16_t opcode) {
     auto size = decode_size((opcode & 0x00C0) >> 6);
     std::uint32_t size_mask = get_size_mask(size);
     if (mode == 0b010 || mode == 0b011 || mode == 0b100 || mode == 0b101 ||
-        mode == 0b110) {
+        mode == 0b110 || mode == 0b111) {
         if (mode == 0b100) {
             A_[index] -= address_step(size, index);
         }
@@ -348,9 +345,21 @@ void Cpu::execute_addq_subq(Bus &bus, std::uint16_t opcode) {
         }
         if (mode == 0b101) {
             std::uint16_t displacement = bus.read16(pc_);
-            pc_ += 2;
+            pc_ += 2U;
             address = add_displacement(address,
                                        static_cast<std::int16_t>(displacement));
+        }
+        if (mode == 0b111) {
+            if (index == 0) {
+                address = static_cast<std::uint32_t>(
+                    static_cast<std::int16_t>(bus.read16(pc_)));
+                pc_ += 2U;
+            } else if (index == 1) {
+                address = read_long(bus, pc_);
+                pc_ += 4U;
+            } else {
+                throw UnsupportedInstruction{opcode};
+            }
         }
 
         std::uint32_t destination = read_memory(bus, address, size);
@@ -377,7 +386,7 @@ void Cpu::execute_branch(Bus &bus, std::uint16_t opcode) {
     if (condition != 0 && condition != 1 && !condition_true(condition)) {
         if (displacement == 0) {
             bus.read16(pc_);
-            pc_ += 2;
+            pc_ += 2U;
         }
         return;
     }
