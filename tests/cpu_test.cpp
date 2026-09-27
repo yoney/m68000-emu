@@ -24,29 +24,56 @@ public:
 
     std::vector<ReadAccess> reads;
     std::vector<WriteAccess> writes;
-    std::map<std::uint32_t, std::uint16_t> memory16;
-    std::map<std::uint32_t, std::uint8_t> memory8;
+    std::map<std::uint32_t, std::uint8_t> memory;
 
     std::uint8_t read8(std::uint32_t address) override {
         reads.push_back({address, 8});
-        auto it = memory8.find(address);
-        return (it != memory8.end()) ? it->second : std::uint8_t{0};
+        return load_byte(address);
     }
 
     std::uint16_t read16(std::uint32_t address) override {
         reads.push_back({address, 16});
-        auto it = memory16.find(address);
-        return (it != memory16.end()) ? it->second : std::uint16_t{0};
+        return (static_cast<std::uint16_t>(load_byte(address)) << 8) |
+               static_cast<std::uint16_t>(load_byte(address + 1U));
     }
 
     void write8(std::uint32_t address, std::uint8_t value) override {
         writes.push_back({address, static_cast<std::uint16_t>(value), 8});
-        memory8[address] = value;
+        store_byte(address, value);
     }
 
     void write16(std::uint32_t address, std::uint16_t value) override {
         writes.push_back({address, value, 16});
-        memory16[address] = value;
+        store_byte(address, static_cast<std::uint8_t>(value >> 8));
+        store_byte(address + 1U, static_cast<std::uint8_t>(value & 0xFFU));
+    }
+
+    void poke8(std::uint32_t address, std::uint8_t value) {
+        store_byte(address, value);
+    }
+
+    void poke16(std::uint32_t address, std::uint16_t value) {
+        store_byte(address, static_cast<std::uint8_t>(value >> 8));
+        store_byte(address + 1U, static_cast<std::uint8_t>(value & 0xFFU));
+    }
+
+    [[nodiscard]] std::uint8_t peek8(std::uint32_t address) const {
+        return load_byte(address);
+    }
+
+    [[nodiscard]] std::uint16_t peek16(std::uint32_t address) const {
+        return (static_cast<std::uint16_t>(load_byte(address)) << 8) |
+               static_cast<std::uint16_t>(load_byte(address + 1U));
+    }
+
+private:
+    [[nodiscard]] std::uint8_t load_byte(std::uint32_t address) const {
+        auto it = memory.find(address);
+        return (it != memory.end()) ? it->second : std::uint8_t{0};
+    }
+
+    void store_byte(std::uint32_t address, std::uint8_t value) {
+        memory[address] = value;
     }
 };
 
@@ -59,12 +86,10 @@ protected:
     m68000::Cpu cpu;
 
     void SetUp() override {
-        bus.memory16[0x000000U] = static_cast<std::uint16_t>(kDefaultSp >> 16);
-        bus.memory16[0x000002U] =
-            static_cast<std::uint16_t>(kDefaultSp & 0xFFFFU);
-        bus.memory16[0x000004U] = static_cast<std::uint16_t>(kDefaultPc >> 16);
-        bus.memory16[0x000006U] =
-            static_cast<std::uint16_t>(kDefaultPc & 0xFFFFU);
+        bus.poke16(0x000000U, static_cast<std::uint16_t>(kDefaultSp >> 16));
+        bus.poke16(0x000002U, static_cast<std::uint16_t>(kDefaultSp & 0xFFFFU));
+        bus.poke16(0x000004U, static_cast<std::uint16_t>(kDefaultPc >> 16));
+        bus.poke16(0x000006U, static_cast<std::uint16_t>(kDefaultPc & 0xFFFFU));
         cpu.reset(bus);
         bus.reads.clear();
         bus.writes.clear();
@@ -73,7 +98,7 @@ protected:
     void load_program(std::initializer_list<std::uint16_t> opcodes,
                       std::uint32_t address = kDefaultPc) {
         for (std::uint16_t op : opcodes) {
-            bus.memory16[address] = op;
+            bus.poke16(address, op);
             address += 2U;
         }
     }
@@ -104,6 +129,69 @@ protected:
 };
 
 } // namespace
+
+TEST(FakeBusTest, SixteenBitWriteIsVisibleThroughTwoEightBitReads) {
+    FakeBus bus;
+    bus.write16(0x1000U, 0x1234U);
+
+    EXPECT_EQ(bus.read8(0x1000U), 0x12U);
+    EXPECT_EQ(bus.read8(0x1001U), 0x34U);
+
+    ASSERT_EQ(bus.writes.size(), 1U);
+    EXPECT_EQ(bus.writes[0].address, 0x1000U);
+    EXPECT_EQ(bus.writes[0].value, 0x1234U);
+    EXPECT_EQ(bus.writes[0].size, 16U);
+
+    ASSERT_EQ(bus.reads.size(), 2U);
+    EXPECT_EQ(bus.reads[0].address, 0x1000U);
+    EXPECT_EQ(bus.reads[0].size, 8U);
+    EXPECT_EQ(bus.reads[1].address, 0x1001U);
+    EXPECT_EQ(bus.reads[1].size, 8U);
+}
+
+TEST(FakeBusTest, TwoEightBitWritesAreVisibleThroughOneSixteenBitRead) {
+    FakeBus bus;
+    bus.write8(0x2000U, 0xABU);
+    bus.write8(0x2001U, 0xCDU);
+
+    EXPECT_EQ(bus.read16(0x2000U), 0xABCDU);
+
+    ASSERT_EQ(bus.writes.size(), 2U);
+    EXPECT_EQ(bus.writes[0].address, 0x2000U);
+    EXPECT_EQ(bus.writes[0].value, 0xABU);
+    EXPECT_EQ(bus.writes[0].size, 8U);
+    EXPECT_EQ(bus.writes[1].address, 0x2001U);
+    EXPECT_EQ(bus.writes[1].value, 0xCDU);
+    EXPECT_EQ(bus.writes[1].size, 8U);
+
+    ASSERT_EQ(bus.reads.size(), 1U);
+    EXPECT_EQ(bus.reads[0].address, 0x2000U);
+    EXPECT_EQ(bus.reads[0].size, 16U);
+}
+
+TEST(FakeBusTest, PokeAndPeekUseBigEndianAndBypassLogging) {
+    FakeBus bus;
+    bus.poke16(0x3000U, 0xCAFEU);
+    bus.poke8(0x3002U, 0xBAU);
+
+    EXPECT_EQ(bus.peek16(0x3000U), 0xCAFEU);
+    EXPECT_EQ(bus.peek8(0x3000U), 0xCAU);
+    EXPECT_EQ(bus.peek8(0x3001U), 0xFEU);
+    EXPECT_EQ(bus.peek8(0x3002U), 0xBAU);
+
+    EXPECT_TRUE(bus.reads.empty());
+    EXPECT_TRUE(bus.writes.empty());
+}
+
+TEST(FakeBusTest, UninitializedAddressReturnsZeroWithoutModifyingMemoryMap) {
+    FakeBus bus;
+    EXPECT_EQ(bus.peek8(0x4000U), 0U);
+    EXPECT_EQ(bus.peek16(0x4002U), 0U);
+    EXPECT_EQ(bus.read8(0x4004U), 0U);
+    EXPECT_EQ(bus.read16(0x4006U), 0U);
+
+    EXPECT_TRUE(bus.memory.empty());
+}
 
 TEST(CpuResetTest, CanBeConstructed) {
     [[maybe_unused]] m68000::Cpu cpu;
@@ -145,10 +233,10 @@ TEST(CpuResetTest, ResetDoesNotPerformAnyBusWrites) {
 
 TEST(CpuResetTest, ResetSetsRegistersToLoadedValues) {
     FakeBus bus;
-    bus.memory16[0x000000U] = 0x0020U;
-    bus.memory16[0x000002U] = 0x4000U;
-    bus.memory16[0x000004U] = 0x0001U;
-    bus.memory16[0x000006U] = 0x8000U;
+    bus.poke16(0x000000U, 0x0020U);
+    bus.poke16(0x000002U, 0x4000U);
+    bus.poke16(0x000004U, 0x0001U);
+    bus.poke16(0x000006U, 0x8000U);
 
     m68000::Cpu cpu;
     cpu.reset(bus);
@@ -160,10 +248,10 @@ TEST(CpuResetTest, ResetSetsRegistersToLoadedValues) {
 
 TEST(CpuResetTest, ResetHandlesFull32BitRangeWithoutSignExtension) {
     FakeBus bus;
-    bus.memory16[0x000000U] = 0xFFFFU;
-    bus.memory16[0x000002U] = 0xFFFFU;
-    bus.memory16[0x000004U] = 0x8000U;
-    bus.memory16[0x000006U] = 0x0001U;
+    bus.poke16(0x000000U, 0xFFFFU);
+    bus.poke16(0x000002U, 0xFFFFU);
+    bus.poke16(0x000004U, 0x8000U);
+    bus.poke16(0x000006U, 0x0001U);
 
     m68000::Cpu cpu;
     cpu.reset(bus);
@@ -465,9 +553,9 @@ TEST_F(CpuTest, BsrShortPushesReturnAddressAndBranches) {
     EXPECT_EQ(cpu.status(), initial_status);
 
     // Verify 32-bit return address (kDefaultPc + 2) was pushed onto the stack
-    EXPECT_EQ(bus.memory16[initial_sp - 4U],
+    EXPECT_EQ(bus.peek16(initial_sp - 4U),
               static_cast<std::uint16_t>((kDefaultPc + 2U) >> 16));
-    EXPECT_EQ(bus.memory16[initial_sp - 2U],
+    EXPECT_EQ(bus.peek16(initial_sp - 2U),
               static_cast<std::uint16_t>((kDefaultPc + 2U) & 0xFFFFU));
 
     ASSERT_EQ(bus.reads.size(), 1U);
@@ -488,9 +576,9 @@ TEST_F(CpuTest, BsrWordPushesReturnAddressAndBranches) {
     EXPECT_EQ(cpu.status(), initial_status);
 
     // Verify 32-bit return address (kDefaultPc + 4) was pushed onto the stack
-    EXPECT_EQ(bus.memory16[initial_sp - 4U],
+    EXPECT_EQ(bus.peek16(initial_sp - 4U),
               static_cast<std::uint16_t>((kDefaultPc + 4U) >> 16));
-    EXPECT_EQ(bus.memory16[initial_sp - 2U],
+    EXPECT_EQ(bus.peek16(initial_sp - 2U),
               static_cast<std::uint16_t>((kDefaultPc + 4U) & 0xFFFFU));
 
     ASSERT_EQ(bus.reads.size(), 2U);
@@ -505,9 +593,9 @@ TEST_F(CpuTest, RtsPopsReturnAddressAndIncrementsStackPointer) {
     const auto initial_status = cpu.status();
 
     // Place 32-bit return address onto the stack (big-endian)
-    bus.memory16[initial_sp] = static_cast<std::uint16_t>(target_pc >> 16);
-    bus.memory16[initial_sp + 2U] =
-        static_cast<std::uint16_t>(target_pc & 0xFFFFU);
+    bus.poke16(initial_sp, static_cast<std::uint16_t>(target_pc >> 16));
+    bus.poke16(initial_sp + 2U,
+               static_cast<std::uint16_t>(target_pc & 0xFFFFU));
 
     load_program({0x4E75U}); // RTS
 
@@ -727,14 +815,14 @@ TEST_F(CpuTest, AddqUnsupportedModeThrows) {
 }
 
 TEST_F(CpuTest, AddqByteToMemoryIndirect) {
-    bus.memory8[kDefaultSp] = 0x41U;
+    bus.poke8(kDefaultSp, 0x41U);
     load_program({
         0x5217U // ADDQ.B #1, (A7)
     });
 
     cpu.step(bus);
 
-    EXPECT_EQ(bus.read8(kDefaultSp), 0x42U);
+    EXPECT_EQ(bus.peek8(kDefaultSp), 0x42U);
     EXPECT_FALSE(flag_z());
     EXPECT_FALSE(flag_n());
     EXPECT_FALSE(flag_c());
@@ -742,49 +830,49 @@ TEST_F(CpuTest, AddqByteToMemoryIndirect) {
 }
 
 TEST_F(CpuTest, AddqWordToMemoryIndirect) {
-    bus.memory16[kDefaultSp] = 0x1234U;
+    bus.poke16(kDefaultSp, 0x1234U);
     load_program({
         0x5257U // ADDQ.W #1, (A7)
     });
 
     cpu.step(bus);
 
-    EXPECT_EQ(bus.read16(kDefaultSp), 0x1235U);
+    EXPECT_EQ(bus.peek16(kDefaultSp), 0x1235U);
     EXPECT_FALSE(flag_z());
     EXPECT_FALSE(flag_n());
 }
 
 TEST_F(CpuTest, AddqLongToMemoryIndirect) {
-    bus.memory16[kDefaultSp] = 0x0001U;
-    bus.memory16[kDefaultSp + 2U] = 0xFFFFU;
+    bus.poke16(kDefaultSp, 0x0001U);
+    bus.poke16(kDefaultSp + 2U, 0xFFFFU);
     load_program({
         0x5297U // ADDQ.L #1, (A7)
     });
 
     cpu.step(bus);
 
-    EXPECT_EQ(bus.read16(kDefaultSp), 0x0002U);
-    EXPECT_EQ(bus.read16(kDefaultSp + 2U), 0x0000U);
+    EXPECT_EQ(bus.peek16(kDefaultSp), 0x0002U);
+    EXPECT_EQ(bus.peek16(kDefaultSp + 2U), 0x0000U);
     EXPECT_FALSE(flag_z());
     EXPECT_FALSE(flag_c());
 }
 
 TEST_F(CpuTest, SubqByteToMemoryIndirectSetsZeroFlag) {
-    bus.memory8[kDefaultSp] = 0x05U;
+    bus.poke8(kDefaultSp, 0x05U);
     load_program({
         0x5B17U // SUBQ.B #5, (A7)
     });
 
     cpu.step(bus);
 
-    EXPECT_EQ(bus.read8(kDefaultSp), 0x00U);
+    EXPECT_EQ(bus.peek8(kDefaultSp), 0x00U);
     EXPECT_TRUE(flag_z());
     EXPECT_FALSE(flag_n());
     EXPECT_FALSE(flag_c());
 }
 
 TEST_F(CpuTest, AddqWordToAddressRegisterIndirectA0) {
-    bus.memory16[0x00000008U] = 0x1000U;
+    bus.poke16(0x00000008U, 0x1000U);
     load_program({
         0x5088U, // ADDQ.L #8, A0 (A0 becomes 8)
         0x5250U  // ADDQ.W #1, (A0)
@@ -794,7 +882,7 @@ TEST_F(CpuTest, AddqWordToAddressRegisterIndirectA0) {
     EXPECT_EQ(cpu.A(0), 8U);
 
     cpu.step(bus);
-    EXPECT_EQ(bus.read16(0x00000008U), 0x1001U);
+    EXPECT_EQ(bus.peek16(0x00000008U), 0x1001U);
 }
 
 TEST_F(CpuTest, SccAndDbccOpcodeSpaceDoesNotEnterAddq) {
