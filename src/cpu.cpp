@@ -335,13 +335,13 @@ void Cpu::execute_addq_subq(Bus &bus, std::uint16_t opcode) {
             pc_ += 2U;
             std::uint8_t displacement = extension & 0x00FFU;
             assert((extension & 0x0700U) == 0);
-            std::uint8_t index = (extension & 0x7000U) >> 12;
+            std::uint8_t index_reg = (extension & 0x7000U) >> 12;
             bool use_low_word = (extension & 0x0800) == 0;
             auto &R = (extension & 0x8000U) ? A_ : D_;
             const std::int32_t index_val =
                 use_low_word ? static_cast<std::int32_t>(
-                                   static_cast<std::int16_t>(R[index]))
-                             : static_cast<std::int32_t>(R[index]);
+                                   static_cast<std::int16_t>(R[index_reg]))
+                             : static_cast<std::int32_t>(R[index_reg]);
             address = add_displacement(address, index_val);
             address = add_displacement(address,
                                        static_cast<std::int8_t>(displacement));
