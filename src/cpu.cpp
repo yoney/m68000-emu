@@ -126,6 +126,9 @@ constexpr std::uint16_t tst_pattern = 0x4A00U;
 constexpr std::uint16_t cmp_mask = 0xF100U;
 constexpr std::uint16_t cmp_pattern = 0xB000U;
 
+constexpr std::uint16_t jmp_mask = 0xFFC0U;
+constexpr std::uint16_t jmp_pattern = 0x4EC0U;
+
 [[nodiscard]] constexpr std::uint32_t
 add_displacement(std::uint32_t address, std::int32_t displacement) noexcept {
     return address + static_cast<std::uint32_t>(displacement);
@@ -242,6 +245,9 @@ void Cpu::step(Bus &bus) {
     } else if ((opcode & cmp_mask) == cmp_pattern &&
                (opcode & 0x00C0U) != 0x00C0U) {
         execute_cmp(bus, opcode);
+        return;
+    } else if ((opcode & jmp_mask) == jmp_pattern) {
+        execute_jmp(bus, opcode);
         return;
     }
 
@@ -523,6 +529,19 @@ void Cpu::execute_cmp(Bus &bus, std::uint16_t opcode) {
     if ((lhs ^ rhs) & (lhs ^ result) & msb) {
         status_ |= overflow_flag;
     }
+}
+
+void Cpu::execute_jmp(Bus &bus, std::uint16_t opcode) {
+    std::uint8_t index = opcode & 0x0007U;
+    std::uint8_t mode = (opcode >> 3) & 0x0007U;
+
+    if (mode != 0b010 && mode != 0b101 && mode != 0b110 && mode != 0b111) {
+        throw UnsupportedInstruction{opcode};
+    }
+
+    auto resolved = resolve_memory_address(bus, opcode, mode, index,
+                                           OperandSize::long_word);
+    pc_ = resolved.address;
 }
 
 Cpu::ResolvedAddress Cpu::resolve_memory_address(Bus &bus, std::uint16_t opcode,

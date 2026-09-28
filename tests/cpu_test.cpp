@@ -2255,7 +2255,7 @@ TEST_F(CpuTest, CmpByteImmediateLessSetsBorrow) {
     EXPECT_TRUE(flag_c()); // 10 < 20 -> borrow
 }
 
-TEST_F(CpuTest, CmpWordImmediateEqual) {
+TEST_F(CpuTest, CmpWordImmediateSetsBorrow) {
     load_program({
         0x7000U, // MOVEQ #0, D0
         0xB07CU, // CMP.W #$1234, D0
@@ -2272,7 +2272,7 @@ TEST_F(CpuTest, CmpWordImmediateEqual) {
     EXPECT_TRUE(flag_c()); // 0 < 0x1234 -> borrow
 }
 
-TEST_F(CpuTest, CmpLongImmediateEqual) {
+TEST_F(CpuTest, CmpLongImmediateSetsBorrow) {
     load_program({
         0x7000U, // MOVEQ #0, D0
         0xB0BCU, // CMP.L #$12345678, D0
@@ -2437,4 +2437,146 @@ TEST_F(CpuTest, CmpByteProgramCounterIndexNegativeDisplacement) {
     EXPECT_FALSE(flag_n());
     EXPECT_FALSE(flag_c());
     EXPECT_FALSE(flag_v());
+}
+
+TEST_F(CpuTest, JmpAddressRegisterIndirect) {
+    load_program({
+        0x5488U, // ADDQ.L #2, A0
+        0x4ED0U  // JMP (A0)
+    });
+
+    cpu.step(bus); // ADDQ.L
+    EXPECT_EQ(cpu.A(0), 2U);
+
+    cpu.step(bus); // JMP (A0)
+    EXPECT_EQ(cpu.pc(), 2U);
+    EXPECT_EQ(cpu.A(0), 2U);
+}
+
+TEST_F(CpuTest, JmpAddressRegisterDisplacement) {
+    load_program({
+        0x5888U, // ADDQ.L #4, A0
+        0x4EE8U, // JMP 16(A0)
+        0x0010U  // displacement +16
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // JMP 16(A0)
+    EXPECT_EQ(cpu.pc(), 20U);
+}
+
+TEST_F(CpuTest, JmpAddressRegisterIndex) {
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x7210U, // MOVEQ #16, D1
+        0x4EF0U, // JMP 4(A0, D1.W)
+        0x1004U  // extension: D1.W, disp +4
+    });
+
+    cpu.step(bus);            // ADDQ.L
+    cpu.step(bus);            // MOVEQ
+    cpu.step(bus);            // JMP
+    EXPECT_EQ(cpu.pc(), 28U); // 8 + 16 + 4
+}
+
+TEST_F(CpuTest, JmpAbsoluteShort) {
+    load_program({
+        0x4EF8U, // JMP ($3000).W
+        0x3000U  // address
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.pc(), 0x3000U);
+}
+
+TEST_F(CpuTest, JmpAbsoluteLong) {
+    load_program({
+        0x4EF9U, // JMP ($00045678).L
+        0x0004U, // high word
+        0x5678U  // low word
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.pc(), 0x00045678U);
+}
+
+TEST_F(CpuTest, JmpProgramCounterDisplacement) {
+    load_program({
+        0x4EFAU, // JMP d16(PC)
+        0x0020U  // displacement +32 (relative to 0x1002)
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.pc(), 0x1022U);
+}
+
+TEST_F(CpuTest, JmpProgramCounterIndex) {
+    load_program({
+        0x7204U, // MOVEQ #4, D1
+        0x4EFBU, // JMP d8(PC, D1.W)
+        0x1006U  // extension: D1.W, disp +6 (relative to 0x1004)
+    });
+
+    cpu.step(bus);                // MOVEQ
+    cpu.step(bus);                // JMP
+    EXPECT_EQ(cpu.pc(), 0x100EU); // 0x1004 + 4 + 6
+}
+
+TEST_F(CpuTest, JmpPreservesConditionCodes) {
+    load_program({
+        0x70FFU, // MOVEQ #-1, D0 (sets N flag, clears Z, V, C)
+        0x4ED0U  // JMP (A0)
+    });
+
+    cpu.step(bus); // MOVEQ
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+
+    cpu.step(bus); // JMP (A0)
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, JmpDataRegisterDirectThrowsUnsupportedInstruction) {
+    load_program({
+        0x4EC0U // JMP D0 (mode 0, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, JmpAddressRegisterDirectThrowsUnsupportedInstruction) {
+    load_program({
+        0x4EC8U // JMP A0 (mode 1, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, JmpPostIncrementThrowsUnsupportedInstruction) {
+    load_program({
+        0x4ED8U // JMP (A0)+ (mode 3, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, JmpPreDecrementThrowsUnsupportedInstruction) {
+    load_program({
+        0x4EE0U // JMP -(A0) (mode 4, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, JmpImmediateThrowsUnsupportedInstruction) {
+    load_program({
+        0x4EFCU // JMP #<data> (mode 7, reg 4, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
