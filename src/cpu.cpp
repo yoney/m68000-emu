@@ -342,6 +342,9 @@ void Cpu::execute_addq_subq(Bus &bus, std::uint16_t opcode) {
     std::uint32_t size_mask = get_size_mask(size);
     if (mode == 0b010 || mode == 0b011 || mode == 0b100 || mode == 0b101 ||
         mode == 0b110 || mode == 0b111) {
+        if (mode == 0b111 && index > 1) {
+            throw UnsupportedInstruction{opcode};
+        }
         auto resolved = resolve_memory_address(bus, opcode, mode, index, size);
         std::uint32_t destination = read_memory(bus, resolved.address, size);
         auto value =
@@ -411,6 +414,8 @@ void Cpu::execute_clr(Bus &bus, std::uint16_t opcode) {
     if (mode == 0) {
         std::uint32_t size_mask = get_size_mask(size);
         D_[index] &= ~size_mask;
+    } else if (mode == 0b111 && index > 1) {
+        throw UnsupportedInstruction{opcode};
     } else {
         auto resolved = resolve_memory_address(bus, opcode, mode, index, size);
         // On physical MC68000 hardware, CLR performs an unneeded read cycle on
@@ -440,6 +445,8 @@ void Cpu::execute_tst(Bus &bus, std::uint16_t opcode) {
     std::uint32_t value{0};
     if (mode == 0) {
         value = D_[index] & size_mask;
+    } else if (mode == 0b111 && index > 1) {
+        throw UnsupportedInstruction{opcode};
     } else {
         auto resolved = resolve_memory_address(bus, opcode, mode, index, size);
         value = read_memory(bus, resolved.address, size);
@@ -471,7 +478,24 @@ void Cpu::execute_cmp(Bus &bus, std::uint16_t opcode) {
     std::uint32_t rhs{0};
     if (mode == 0) {
         rhs = D_[index] & size_mask;
-    } else if (mode == 1) {
+    } else if (mode == 0b111 && index == 0b100) {
+        switch (size) {
+            case OperandSize::byte:
+                rhs = bus.read16(pc_) & 0x00FFU;
+                pc_ += 2U;
+                break;
+
+            case OperandSize::word:
+                rhs = bus.read16(pc_);
+                pc_ += 2U;
+                break;
+
+            case OperandSize::long_word:
+                rhs = read_long(bus, pc_);
+                pc_ += 4U;
+                break;
+        }
+    } else if (mode == 0b001) {
         if (size == OperandSize::byte) {
             throw UnsupportedInstruction{opcode};
         }
@@ -550,6 +574,25 @@ Cpu::ResolvedAddress Cpu::resolve_memory_address(Bus &bus, std::uint16_t opcode,
             } else if (address_register == 1) {
                 resolved.address = read_long(bus, pc_);
                 pc_ += 4U;
+            } else if (address_register == 2) {
+                std::uint16_t displacement = bus.read16(pc_);
+                resolved.address = add_displacement(
+                    pc_, static_cast<std::int16_t>(displacement));
+                pc_ += 2U;
+            } else if (address_register == 3) {
+                std::uint16_t extension = bus.read16(pc_);
+                std::uint8_t displacement = extension & 0x00FFU;
+                std::uint8_t index_reg = (extension & 0x7000U) >> 12;
+                bool use_low_word = (extension & 0x0800U) == 0;
+                auto &R = (extension & 0x8000U) ? A_ : D_;
+                const std::int32_t index_val =
+                    use_low_word ? static_cast<std::int32_t>(
+                                       static_cast<std::int16_t>(R[index_reg]))
+                                 : static_cast<std::int32_t>(R[index_reg]);
+                resolved.address = add_displacement(pc_, index_val);
+                resolved.address = add_displacement(
+                    resolved.address, static_cast<std::int8_t>(displacement));
+                pc_ += 2U;
             } else {
                 throw UnsupportedInstruction{opcode};
             }

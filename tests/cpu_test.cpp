@@ -813,6 +813,14 @@ TEST_F(CpuTest, AddqUnsupportedModeThrows) {
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
 
+TEST_F(CpuTest, AddqProgramCounterIndexDestinationThrows) {
+    load_program({
+        0x527BU // ADDQ.W #1, d8(PC, D0) (mode 7, reg 3, non-alterable)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
 TEST_F(CpuTest, AddqByteToMemoryIndirect) {
     bus.poke8(kDefaultSp, 0x41U);
     load_program({
@@ -1633,6 +1641,22 @@ TEST_F(CpuTest, ClrImmediateDestinationThrowsUnsupportedInstruction) {
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
 
+TEST_F(CpuTest, ClrProgramCounterDisplacementThrowsUnsupportedInstruction) {
+    load_program({
+        0x427AU // CLR.W d16(PC) (mode 7, reg 2, non-alterable)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, ClrProgramCounterIndexThrowsUnsupportedInstruction) {
+    load_program({
+        0x427BU // CLR.W d8(PC, D0) (mode 7, reg 3, non-alterable)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
 TEST_F(CpuTest, ClrReservedSizeThrowsUnsupportedInstruction) {
     load_program({
         0x42C0U // CLR opcode pattern with reserved size 11
@@ -1917,6 +1941,22 @@ TEST_F(CpuTest, TstImmediateDestinationThrowsUnsupportedInstruction) {
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
 
+TEST_F(CpuTest, TstProgramCounterDisplacementThrowsUnsupportedInstruction) {
+    load_program({
+        0x4A7AU // TST.W d16(PC) (mode 7, reg 2, non-alterable on MC68000)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, TstProgramCounterIndexThrowsUnsupportedInstruction) {
+    load_program({
+        0x4A7BU // TST.W d8(PC, D0) (mode 7, reg 3, non-alterable on MC68000)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
 TEST_F(CpuTest, TstReservedSizeThrowsUnsupportedInstruction) {
     load_program({
         0x4AC0U // TST opcode pattern with reserved size 11 (TAS space)
@@ -2177,4 +2217,224 @@ TEST_F(CpuTest, CmpAbsoluteAddress) {
 
     EXPECT_FALSE(flag_z());
     EXPECT_TRUE(flag_c()); // 0 < 0xCAFE -> borrow
+}
+
+TEST_F(CpuTest, CmpByteImmediateEqual) {
+    load_program({
+        0x702AU, // MOVEQ #42, D0
+        0xB03CU, // CMP.B #42, D0
+        0x002AU  // immediate byte 42 (in low-order byte)
+    });
+
+    cpu.step(bus); // MOVEQ
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus); // CMP.B
+
+    EXPECT_EQ(cpu.D(0), 42U);
+    EXPECT_EQ(cpu.pc(), initial_pc + 4U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+    EXPECT_FALSE(flag_v());
+}
+
+TEST_F(CpuTest, CmpByteImmediateLessSetsBorrow) {
+    load_program({
+        0x700AU, // MOVEQ #10, D0
+        0xB03CU, // CMP.B #20, D0
+        0x0014U  // immediate byte 20
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 10U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_n());
+    EXPECT_TRUE(flag_c()); // 10 < 20 -> borrow
+}
+
+TEST_F(CpuTest, CmpWordImmediateEqual) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0xB07CU, // CMP.W #$1234, D0
+        0x1234U  // immediate word
+    });
+
+    cpu.step(bus);
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), initial_pc + 4U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_c()); // 0 < 0x1234 -> borrow
+}
+
+TEST_F(CpuTest, CmpLongImmediateEqual) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0xB0BCU, // CMP.L #$12345678, D0
+        0x1234U, // immediate long high word
+        0x5678U  // immediate long low word
+    });
+
+    cpu.step(bus);
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.pc(), initial_pc + 6U); // opcode (2) + long imm (4)
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_c()); // 0 < 0x12345678 -> borrow
+}
+
+TEST_F(CpuTest, CmpLongImmediateExactMatch) {
+    load_program({0x70FFU, // MOVEQ #-1, D0 -> 0xFFFFFFFF
+                  0xB0BCU, // CMP.L #$FFFFFFFF, D0
+                  0xFFFFU, 0xFFFFU});
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+    EXPECT_FALSE(flag_v());
+    EXPECT_EQ(cpu.D(0), 0xFFFFFFFFU);
+}
+
+TEST_F(CpuTest, CmpWordProgramCounterDisplacement) {
+    load_program({
+        0x7020U, // MOVEQ #32, D0
+        0xB07AU, // CMP.W d16(PC), D0
+        0x0004U, // displacement +4 (target = 0x1004 + 4 = 0x1008)
+        0x4E71U, // NOP (0x1006)
+        0x0020U  // data word 32 (0x1008)
+    });
+
+    cpu.step(bus); // MOVEQ
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus); // CMP.W
+
+    EXPECT_EQ(cpu.pc(), initial_pc + 4U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+    EXPECT_FALSE(flag_v());
+}
+
+TEST_F(CpuTest, CmpByteProgramCounterDisplacementNegative) {
+    bus.poke8(0x0FFEU, 0x55U);
+    load_program({
+        0x7055U, // MOVEQ #0x55, D0
+        0xB03AU, // CMP.B d16(PC), D0
+        0xFFFAU  // displacement -6 (target = 0x1004 - 6 = 0x0FFE)
+    });
+
+    cpu.step(bus); // MOVEQ
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus); // CMP.B
+
+    EXPECT_EQ(cpu.pc(), initial_pc + 4U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+    EXPECT_FALSE(flag_v());
+}
+
+TEST_F(CpuTest, CmpWordProgramCounterIndexWordSigned) {
+    load_program({
+        0x7020U, // MOVEQ #32, D0
+        0x7204U, // MOVEQ #4, D1
+        0xB07BU, // CMP.W d8(PC, D1.W), D0
+        0x1002U, // extension: D1.W + 2 (target = 0x1006 + 4 + 2 = 0x100C)
+        0x0000U, // 0x1008
+        0x0000U, // 0x100A
+        0x0020U  // data word 32 (0x100C)
+    });
+
+    cpu.step(bus); // MOVEQ D0
+    cpu.step(bus); // MOVEQ D1
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus); // CMP.W
+
+    EXPECT_EQ(cpu.pc(), initial_pc + 4U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+    EXPECT_FALSE(flag_v());
+}
+
+TEST_F(CpuTest, CmpWordProgramCounterIndexWordNegativeSignExtended) {
+    load_program({
+        0x7010U, // MOVEQ #16, D0
+        0x7200U, // MOVEQ #0, D1
+        0x5941U, // SUBQ.W #4, D1 -> D1 = 0x0000FFFC (low word is -4)
+        0xB07BU, // CMP.W d8(PC, D1.W), D0
+        0x1006U, // extension: D1.W + 6 (target = 0x1008 + (-4) + 6 = 0x100A)
+        0x0010U  // data word 16 (0x100A)
+    });
+
+    cpu.step(bus); // MOVEQ D0
+    cpu.step(bus); // MOVEQ D1
+    cpu.step(bus); // SUBQ.W D1
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus); // CMP.W
+
+    EXPECT_EQ(cpu.pc(), initial_pc + 4U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+    EXPECT_FALSE(flag_v());
+}
+
+TEST_F(CpuTest, CmpLongProgramCounterIndexLong) {
+    bus.poke16(0x1012U, 0x1234U);
+    bus.poke16(0x1014U, 0x5678U);
+    load_program({
+        0x5089U, // ADDQ.L #8, A1 -> A1 = 8
+        0x7000U, // MOVEQ #0, D0
+        0xB0BBU, // CMP.L d8(PC, A1.L), D0
+        0x9804U  // extension: A1.L + 4 (target = 0x1006 + 8 + 4 = 0x1012)
+    });
+
+    cpu.step(bus); // ADDQ.L A1
+    cpu.step(bus); // MOVEQ D0
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus); // CMP.L
+
+    EXPECT_EQ(cpu.pc(), initial_pc + 4U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_n());
+    EXPECT_TRUE(flag_c()); // 0 < 0x12345678 -> borrow
+    EXPECT_FALSE(flag_v());
+}
+
+TEST_F(CpuTest, CmpByteProgramCounterIndexNegativeDisplacement) {
+    bus.poke8(0x0FFEU, 42U);
+    load_program({
+        0x702AU, // MOVEQ #42, D0
+        0x7200U, // MOVEQ #0, D1
+        0xB03BU, // CMP.B d8(PC, D1.W), D0
+        0x10F8U  // extension: D1.W + (-8) (target = 0x1006 + 0 - 8 = 0x0FFE)
+    });
+
+    cpu.step(bus); // MOVEQ D0
+    cpu.step(bus); // MOVEQ D1
+
+    const auto initial_pc = cpu.pc();
+    cpu.step(bus); // CMP.B
+
+    EXPECT_EQ(cpu.pc(), initial_pc + 4U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+    EXPECT_FALSE(flag_v());
 }
