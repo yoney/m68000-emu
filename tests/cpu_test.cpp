@@ -1924,3 +1924,257 @@ TEST_F(CpuTest, TstReservedSizeThrowsUnsupportedInstruction) {
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
+
+TEST_F(CpuTest, CmpByteEqualSetsZeroAndClearsOthers) {
+    load_program({
+        0x702AU, // MOVEQ #42, D0
+        0x722AU, // MOVEQ #42, D1
+        0xB001U  // CMP.B D1, D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 42U); // Destination must be preserved
+    EXPECT_EQ(cpu.D(1), 42U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, CmpByteGreaterClearsBorrowAndNegative) {
+    load_program({
+        0x7005U, // MOVEQ #5, D0
+        0x7202U, // MOVEQ #2, D1
+        0xB001U  // CMP.B D1, D0 (5 - 2 = 3)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 5U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c()); // No borrow
+}
+
+TEST_F(CpuTest, CmpByteLessSetsBorrowAndNegative) {
+    load_program({
+        0x7002U, // MOVEQ #2, D0
+        0x7205U, // MOVEQ #5, D1
+        0xB001U  // CMP.B D1, D0 (2 - 5 = -3)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 2U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_TRUE(flag_c()); // Borrow occurred
+}
+
+TEST_F(CpuTest, CmpByteOverflow) {
+    load_program({
+        0x707FU, // MOVEQ #127, D0
+        0x7280U, // MOVEQ #-128, D1 (0xFFFFFF80)
+        0xB001U  // CMP.B D1, D0 (127 - (-128) = 255 -> overflow)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_TRUE(flag_v());
+    EXPECT_TRUE(flag_n()); // Result 0xFF has sign bit set
+    EXPECT_FALSE(flag_z());
+}
+
+TEST_F(CpuTest, CmpWordDataRegisters) {
+    load_program({
+        0x7001U, // MOVEQ #1, D0
+        0x7202U, // MOVEQ #2, D1
+        0xB041U  // CMP.W D1, D0 (1 - 2 = -1)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_n());
+    EXPECT_TRUE(flag_c());
+}
+
+TEST_F(CpuTest, CmpLongDataRegisters) {
+    load_program({
+        0x700AU, // MOVEQ #10, D0
+        0x720AU, // MOVEQ #10, D1
+        0xB081U  // CMP.L D1, D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, CmpWordAddressRegisterSource) {
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 = 8)
+        0x7008U, // MOVEQ #8, D0  (D0 = 8)
+        0xB048U  // CMP.W A0, D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.D(0), 8U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, CmpLongAddressRegisterSource) {
+    load_program({
+        0x5088U, // ADDQ.L #8, A0 (A0 = 8)
+        0x7005U, // MOVEQ #5, D0  (D0 = 5)
+        0xB088U  // CMP.L A0, D0 (5 - 8 = -3)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_n());
+    EXPECT_TRUE(flag_c());
+}
+
+TEST_F(CpuTest, CmpByteAddressRegisterSourceThrowsUnsupportedInstruction) {
+    load_program({
+        0xB008U // CMP.B A0, D0 (byte operations on An are illegal)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, CmpPreservesExtendFlag) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0x5380U, // SUBQ.L #1, D0 (sets X, N, C flags)
+        0x7205U, // MOVEQ #5, D1 (preserves X)
+        0xB281U  // CMP.L D1, D1 (equal, Z=1, N=0, C=0, X unaffected)
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    EXPECT_TRUE(flag_x());
+
+    cpu.step(bus); // MOVEQ #5, D1
+    EXPECT_TRUE(flag_x());
+
+    cpu.step(bus); // CMP.L D1, D1
+    EXPECT_TRUE(flag_z());
+    EXPECT_TRUE(flag_x()); // X flag must be preserved
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, CmpMemoryIndirectReadsWithoutWriting) {
+    constexpr std::uint32_t target_address = 0x00000008U;
+    bus.poke8(target_address, 0x05U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x7005U, // MOVEQ #5, D0
+        0xB010U  // CMP.B (A0), D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    bus.reads.clear();
+    bus.writes.clear();
+
+    cpu.step(bus); // CMP.B (A0), D0
+
+    EXPECT_TRUE(flag_z());
+    EXPECT_EQ(cpu.D(0), 5U);
+    EXPECT_EQ(bus.peek8(target_address), 0x05U);
+    EXPECT_TRUE(bus.writes.empty()); // CMP must not write to memory
+}
+
+TEST_F(CpuTest, CmpPostIncrementAdvancesAddress) {
+    bus.poke16(0x00000008U, 0x1234U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x7000U, // MOVEQ #0, D0
+        0xB058U  // CMP.W (A0)+, D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.A(0), 10U);
+    EXPECT_FALSE(flag_z());
+}
+
+TEST_F(CpuTest, CmpPreDecrementDecrementsAddress) {
+    bus.poke16(0x00000006U, 0x1234U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x7000U, // MOVEQ #0, D0
+        0xB060U  // CMP.W -(A0), D0
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_EQ(cpu.A(0), 6U);
+    EXPECT_FALSE(flag_z());
+}
+
+TEST_F(CpuTest, CmpDisplacement) {
+    bus.poke8(0x0000000CU, 0x20U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x7020U, // MOVEQ #32, D0
+        0xB028U, // CMP.B 4(A0), D0
+        0x0004U  // displacement +4
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_TRUE(flag_z());
+    EXPECT_EQ(cpu.A(0), 8U);
+}
+
+TEST_F(CpuTest, CmpAbsoluteAddress) {
+    bus.poke16(0x2000U, 0xCAFEU);
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0xB078U, // CMP.W ($2000).W, D0
+        0x2000U  // absolute address
+    });
+
+    cpu.step(bus);
+    cpu.step(bus);
+
+    EXPECT_FALSE(flag_z());
+    EXPECT_TRUE(flag_c()); // 0 < 0xCAFE -> borrow
+}

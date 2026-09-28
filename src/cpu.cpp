@@ -123,6 +123,9 @@ constexpr std::uint16_t clr_pattern = 0x4200U;
 constexpr std::uint16_t tst_mask = 0xFF00U;
 constexpr std::uint16_t tst_pattern = 0x4A00U;
 
+constexpr std::uint16_t cmp_mask = 0xF100U;
+constexpr std::uint16_t cmp_pattern = 0xB000U;
+
 [[nodiscard]] constexpr std::uint32_t
 add_displacement(std::uint32_t address, std::int32_t displacement) noexcept {
     return address + static_cast<std::uint32_t>(displacement);
@@ -235,6 +238,10 @@ void Cpu::step(Bus &bus) {
     } else if ((opcode & tst_mask) == tst_pattern &&
                (opcode & 0x00C0U) != 0x00C0U) {
         execute_tst(bus, opcode);
+        return;
+    } else if ((opcode & cmp_mask) == cmp_pattern &&
+               (opcode & 0x00C0U) != 0x00C0U) {
+        execute_cmp(bus, opcode);
         return;
     }
 
@@ -447,6 +454,50 @@ void Cpu::execute_tst(Bus &bus, std::uint16_t opcode) {
         status_ |= zero_flag;
     } else if (value & msb) {
         status_ |= negative_flag;
+    }
+}
+
+// CMP.<size> <ea>, Dn - Compare
+// Operation: Dn - <ea>
+// Condition codes: N = (result < 0), Z = (result == 0), V = overflow, C =
+// borrow, X is unaffected.
+void Cpu::execute_cmp(Bus &bus, std::uint16_t opcode) {
+    auto size = decode_size((opcode & 0x00C0U) >> 6);
+    std::uint32_t size_mask = get_size_mask(size);
+    std::uint8_t d_index = (opcode & 0x0E00) >> 9;
+    std::uint32_t lhs = D_[d_index] & size_mask;
+    std::uint8_t index = opcode & 0x0007U;
+    std::uint8_t mode = (opcode >> 3) & 0x0007U;
+    std::uint32_t rhs{0};
+    if (mode == 0) {
+        rhs = D_[index] & size_mask;
+    } else if (mode == 1) {
+        if (size == OperandSize::byte) {
+            throw UnsupportedInstruction{opcode};
+        }
+        rhs = A_[index] & size_mask;
+    } else {
+        auto resolved = resolve_memory_address(bus, opcode, mode, index, size);
+        rhs = read_memory(bus, resolved.address, size);
+        if (resolved.post_increment) {
+            A_[index] += resolved.post_increment;
+        }
+    }
+
+    status_ &= static_cast<std::uint16_t>(~nzvc_flags);
+    const std::uint32_t msb = (size_mask >> 1U) + 1U;
+    std::uint32_t result = (lhs - rhs) & size_mask;
+    if (result == 0U) {
+        status_ |= zero_flag;
+    }
+    if ((result & msb) != 0U) {
+        status_ |= negative_flag;
+    }
+    if (rhs > lhs) {
+        status_ |= carry_flag;
+    }
+    if ((lhs ^ rhs) & (lhs ^ result) & msb) {
+        status_ |= overflow_flag;
     }
 }
 
