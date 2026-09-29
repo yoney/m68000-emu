@@ -55,6 +55,11 @@ public:
         store_byte(address + 1U, static_cast<std::uint8_t>(value & 0xFFU));
     }
 
+    void poke32(std::uint32_t address, std::uint32_t value) {
+        poke16(address, static_cast<std::uint16_t>(value >> 16));
+        poke16(address + 2U, static_cast<std::uint16_t>(value & 0xFFFFU));
+    }
+
     [[nodiscard]] std::uint8_t peek8(std::uint32_t address) const {
         return load_byte(address);
     }
@@ -63,6 +68,11 @@ public:
         return static_cast<std::uint16_t>(
             (static_cast<std::uint32_t>(load_byte(address)) << 8) |
             static_cast<std::uint32_t>(load_byte(address + 1U)));
+    }
+
+    [[nodiscard]] std::uint32_t peek32(std::uint32_t address) const {
+        return (static_cast<std::uint32_t>(peek16(address)) << 16) |
+               static_cast<std::uint32_t>(peek16(address + 2U));
     }
 
 private:
@@ -85,10 +95,8 @@ protected:
     m68000::Cpu cpu;
 
     void SetUp() override {
-        bus.poke16(0x000000U, static_cast<std::uint16_t>(kDefaultSp >> 16));
-        bus.poke16(0x000002U, static_cast<std::uint16_t>(kDefaultSp & 0xFFFFU));
-        bus.poke16(0x000004U, static_cast<std::uint16_t>(kDefaultPc >> 16));
-        bus.poke16(0x000006U, static_cast<std::uint16_t>(kDefaultPc & 0xFFFFU));
+        bus.poke32(0x000000U, kDefaultSp);
+        bus.poke32(0x000004U, kDefaultPc);
         cpu.reset(bus);
         bus.reads.clear();
         bus.writes.clear();
@@ -592,9 +600,7 @@ TEST_F(CpuTest, RtsPopsReturnAddressAndIncrementsStackPointer) {
     const auto initial_status = cpu.status();
 
     // Place 32-bit return address onto the stack (big-endian)
-    bus.poke16(initial_sp, static_cast<std::uint16_t>(target_pc >> 16));
-    bus.poke16(initial_sp + 2U,
-               static_cast<std::uint16_t>(target_pc & 0xFFFFU));
+    bus.poke32(initial_sp, target_pc);
 
     load_program({0x4E75U}); // RTS
 
@@ -2576,6 +2582,179 @@ TEST_F(CpuTest, JmpPreDecrementThrowsUnsupportedInstruction) {
 TEST_F(CpuTest, JmpImmediateThrowsUnsupportedInstruction) {
     load_program({
         0x4EFCU // JMP #<data> (mode 7, reg 4, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, JsrAddressRegisterIndirect) {
+    const auto initial_sp = cpu.A(7);
+
+    load_program({
+        0x5488U, // ADDQ.L #2, A0
+        0x4E90U  // JSR (A0)
+    });
+
+    cpu.step(bus); // ADDQ.L
+    EXPECT_EQ(cpu.A(0), 2U);
+
+    cpu.step(bus); // JSR (A0)
+    EXPECT_EQ(cpu.pc(), 2U);
+    EXPECT_EQ(cpu.A(0), 2U);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+
+    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 4U);
+}
+
+TEST_F(CpuTest, JsrAddressRegisterDisplacement) {
+    const auto initial_sp = cpu.A(7);
+
+    load_program({
+        0x5888U, // ADDQ.L #4, A0
+        0x4EA8U, // JSR 16(A0) (2 words: opcode + disp)
+        0x0010U  // displacement +16
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // JSR 16(A0)
+    EXPECT_EQ(cpu.pc(), 20U);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    // Multi-word return address must point past the displacement word
+    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 6U);
+}
+
+TEST_F(CpuTest, JsrAddressRegisterIndex) {
+    const auto initial_sp = cpu.A(7);
+
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x7210U, // MOVEQ #16, D1
+        0x4EB0U, // JSR 4(A0, D1.W)
+        0x1004U  // extension: D1.W, disp +4
+    });
+
+    cpu.step(bus);            // ADDQ.L
+    cpu.step(bus);            // MOVEQ
+    cpu.step(bus);            // JSR
+    EXPECT_EQ(cpu.pc(), 28U); // 8 + 16 + 4
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 8U);
+}
+
+TEST_F(CpuTest, JsrAbsoluteShort) {
+    const auto initial_sp = cpu.A(7);
+
+    load_program({
+        0x4EB8U, // JSR ($3000).W
+        0x3000U  // address
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.pc(), 0x3000U);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 4U);
+}
+
+TEST_F(CpuTest, JsrAbsoluteLong) {
+    const auto initial_sp = cpu.A(7);
+
+    load_program({
+        0x4EB9U, // JSR ($00045678).L (3 words: opcode + 2 address words)
+        0x0004U, // high word
+        0x5678U  // low word
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.pc(), 0x00045678U);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    // 3-word instruction pushes return address after full 6-byte instruction
+    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 6U);
+}
+
+TEST_F(CpuTest, JsrProgramCounterDisplacement) {
+    const auto initial_sp = cpu.A(7);
+
+    load_program({
+        0x4EBAU, // JSR d16(PC)
+        0x0020U  // displacement +32 (relative to extension word at 0x1002)
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.pc(), 0x1022U);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 4U);
+}
+
+TEST_F(CpuTest, JsrProgramCounterIndex) {
+    const auto initial_sp = cpu.A(7);
+
+    load_program({
+        0x7204U, // MOVEQ #4, D1
+        0x4EBBU, // JSR d8(PC, D1.W)
+        0x1006U  // extension: D1.W, disp +6 (relative to 0x1004)
+    });
+
+    cpu.step(bus);                // MOVEQ
+    cpu.step(bus);                // JSR
+    EXPECT_EQ(cpu.pc(), 0x100EU); // 0x1004 + 4 + 6
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 6U);
+}
+
+TEST_F(CpuTest, JsrPreservesConditionCodes) {
+    load_program({
+        0x70FFU, // MOVEQ #-1, D0 (sets N flag, clears Z, V, C)
+        0x4E90U  // JSR (A0)
+    });
+
+    cpu.step(bus); // MOVEQ
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+
+    cpu.step(bus); // JSR (A0)
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, JsrDataRegisterDirectThrowsUnsupportedInstruction) {
+    load_program({
+        0x4E80U // JSR D0 (mode 0, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, JsrAddressRegisterDirectThrowsUnsupportedInstruction) {
+    load_program({
+        0x4E88U // JSR A0 (mode 1, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, JsrPostIncrementThrowsUnsupportedInstruction) {
+    load_program({
+        0x4E98U // JSR (A0)+ (mode 3, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, JsrPreDecrementThrowsUnsupportedInstruction) {
+    load_program({
+        0x4EA0U // JSR -(A0) (mode 4, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, JsrImmediateThrowsUnsupportedInstruction) {
+    load_program({
+        0x4EBCU // JSR #<data> (mode 7, reg 4, non-control)
     });
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
