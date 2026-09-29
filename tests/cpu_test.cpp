@@ -2759,3 +2759,180 @@ TEST_F(CpuTest, JsrImmediateThrowsUnsupportedInstruction) {
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
+
+TEST_F(CpuTest, LeaAddressRegisterIndirect) {
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x43D0U  // LEA (A0), A1
+    });
+
+    cpu.step(bus); // ADDQ.L
+    EXPECT_EQ(cpu.A(0), 8U);
+
+    bus.reads.clear();
+    bus.writes.clear();
+
+    cpu.step(bus); // LEA (A0), A1
+    EXPECT_EQ(cpu.A(1), 8U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
+
+    // Verify LEA does not read from or write to the target effective address
+    ASSERT_EQ(bus.reads.size(), 1U);
+    EXPECT_EQ(bus.reads[0].address, kDefaultPc + 2U); // only opcode fetched
+    EXPECT_TRUE(bus.writes.empty());
+}
+
+TEST_F(CpuTest, LeaAddressRegisterDisplacement) {
+    load_program({
+        0x5888U, // ADDQ.L #4, A0
+        0x43E8U, // LEA 16(A0), A1
+        0x0010U  // displacement +16
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // LEA 16(A0), A1
+    EXPECT_EQ(cpu.A(1), 20U);
+    EXPECT_EQ(cpu.A(0), 4U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
+}
+
+TEST_F(CpuTest, LeaAddressRegisterDisplacementSameRegister) {
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x41E8U, // LEA 4(A0), A0 (in-place advance)
+        0x0004U  // displacement +4
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // LEA 4(A0), A0
+    EXPECT_EQ(cpu.A(0), 12U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
+}
+
+TEST_F(CpuTest, LeaAddressRegisterIndex) {
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x7210U, // MOVEQ #16, D1
+        0x45F0U, // LEA 4(A0, D1.W), A2
+        0x1004U  // extension: D1.W, disp +4
+    });
+
+    cpu.step(bus);            // ADDQ.L
+    cpu.step(bus);            // MOVEQ
+    cpu.step(bus);            // LEA
+    EXPECT_EQ(cpu.A(2), 28U); // 8 + 16 + 4
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_EQ(cpu.D(1), 16U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
+}
+
+TEST_F(CpuTest, LeaAbsoluteShort) {
+    load_program({
+        0x41F8U, // LEA ($3000).W, A0
+        0x3000U  // address
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(0), 0x3000U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
+}
+
+TEST_F(CpuTest, LeaAbsoluteLong) {
+    load_program({
+        0x41F9U, // LEA ($00045678).L, A0
+        0x0004U, // high word
+        0x5678U  // low word
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(0), 0x00045678U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
+}
+
+TEST_F(CpuTest, LeaProgramCounterDisplacement) {
+    load_program({
+        0x41FAU, // LEA d16(PC), A0
+        0x0020U  // displacement +32 (relative to 0x1002)
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(0), 0x1022U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
+}
+
+TEST_F(CpuTest, LeaProgramCounterIndex) {
+    load_program({
+        0x7204U, // MOVEQ #4, D1
+        0x41FBU, // LEA d8(PC, D1.W), A0
+        0x1006U  // extension: D1.W, disp +6 (relative to 0x1004)
+    });
+
+    cpu.step(bus);                // MOVEQ
+    cpu.step(bus);                // LEA
+    EXPECT_EQ(cpu.A(0), 0x100EU); // 0x1004 + 4 + 6
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
+}
+
+TEST_F(CpuTest, LeaPreservesConditionCodes) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0x5380U, // SUBQ.L #1, D0 (sets X, N, C flags)
+        0x43D0U  // LEA (A0), A1
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SUBQ
+    EXPECT_TRUE(flag_x());
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_TRUE(flag_c());
+
+    cpu.step(bus); // LEA (A0), A1
+    EXPECT_TRUE(flag_x());
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_TRUE(flag_c());
+}
+
+TEST_F(CpuTest, LeaDataRegisterDirectThrowsUnsupportedInstruction) {
+    load_program({
+        0x41C0U // LEA D0, A0 (mode 0, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, LeaAddressRegisterDirectThrowsUnsupportedInstruction) {
+    load_program({
+        0x41C8U // LEA A0, A0 (mode 1, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, LeaPostIncrementThrowsUnsupportedInstruction) {
+    load_program({
+        0x41D8U // LEA (A0)+, A0 (mode 3, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, LeaPreDecrementThrowsUnsupportedInstruction) {
+    load_program({
+        0x41E0U // LEA -(A0), A0 (mode 4, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, LeaImmediateThrowsUnsupportedInstruction) {
+    load_program({
+        0x41FCU // LEA #<data>, A0 (mode 7, reg 4, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}

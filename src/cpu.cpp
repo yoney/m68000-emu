@@ -132,6 +132,9 @@ constexpr std::uint16_t jmp_pattern = 0x4EC0U;
 constexpr std::uint16_t jsr_mask = 0xFFC0U;
 constexpr std::uint16_t jsr_pattern = 0x4E80U;
 
+constexpr std::uint16_t lea_mask = 0xF1C0U;
+constexpr std::uint16_t lea_pattern = 0x41C0U;
+
 [[nodiscard]] constexpr std::uint32_t
 add_displacement(std::uint32_t address, std::int32_t displacement) noexcept {
     return address + static_cast<std::uint32_t>(displacement);
@@ -254,6 +257,9 @@ void Cpu::step(Bus &bus) {
         return;
     } else if ((opcode & jsr_mask) == jsr_pattern) {
         execute_jsr(bus, opcode);
+        return;
+    } else if ((opcode & lea_mask) == lea_pattern) {
+        execute_lea(bus, opcode);
         return;
     }
 
@@ -564,6 +570,21 @@ void Cpu::execute_jsr(Bus &bus, std::uint16_t opcode) {
     A_[7] -= 4U;
     write_long(bus, A_[7], pc_);
     pc_ = resolved.address;
+}
+
+void Cpu::execute_lea(Bus &bus, std::uint16_t opcode) {
+    std::uint8_t destination_index = (opcode >> 9) & 0x0007U;
+    std::uint8_t index = opcode & 0x0007U;
+    std::uint8_t mode = (opcode >> 3) & 0x0007U;
+
+    if (mode != 0b010 && mode != 0b101 && mode != 0b110 && mode != 0b111) {
+        throw UnsupportedInstruction{opcode};
+    }
+
+    auto resolved = resolve_memory_address(bus, opcode, mode, index,
+                                           OperandSize::long_word);
+
+    A_[destination_index] = resolved.address;
 }
 
 Cpu::ResolvedAddress Cpu::resolve_memory_address(Bus &bus, std::uint16_t opcode,
