@@ -3104,14 +3104,6 @@ TEST_F(CpuTest, PeaPreservesConditionCodes) {
     EXPECT_TRUE(flag_c());
 }
 
-TEST_F(CpuTest, PeaDataRegisterDirectThrowsUnsupportedInstruction) {
-    load_program({
-        0x4840U // PEA D0 (mode 0, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
 TEST_F(CpuTest, PeaAddressRegisterDirectThrowsUnsupportedInstruction) {
     load_program({
         0x4848U // PEA A0 (mode 1, non-control)
@@ -3142,4 +3134,124 @@ TEST_F(CpuTest, PeaImmediateThrowsUnsupportedInstruction) {
     });
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, SwapWordHalvesPositive) {
+    load_program({
+        0x7001U, // MOVEQ #1, D0 -> D0 = 0x00000001
+        0x4840U  // SWAP D0
+    });
+
+    cpu.step(bus); // MOVEQ
+    EXPECT_EQ(cpu.D(0), 1U);
+
+    cpu.step(bus); // SWAP D0
+    EXPECT_EQ(cpu.D(0), 0x00010000U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, SwapConsecutiveRestoresValue) {
+    load_program({
+        0x7080U, // MOVEQ #-128, D0 -> D0 = 0xFFFFFF80
+        0x4840U, // SWAP D0 -> D0 = 0xFF80FFFF
+        0x4840U  // SWAP D0 -> D0 = 0xFFFFFF80
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SWAP D0
+    EXPECT_EQ(cpu.D(0), 0xFF80FFFFU);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+
+    cpu.step(bus); // SWAP D0
+    EXPECT_EQ(cpu.D(0), 0xFFFFFF80U);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, SwapZeroSetsZeroFlag) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0 -> D0 = 0
+        0x4840U  // SWAP D0
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SWAP D0
+    EXPECT_EQ(cpu.D(0), 0U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, SwapNegativeSetsNegativeFlag) {
+    load_program({
+        0x7080U, // MOVEQ #-128, D0 -> D0 = 0xFFFFFF80
+        0x4840U  // SWAP D0 -> 0xFF80FFFF (bit 31 is 1)
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SWAP D0
+    EXPECT_EQ(cpu.D(0), 0xFF80FFFFU);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, SwapPreservesExtendFlagAndClearsOverflowAndCarry) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0x5380U, // SUBQ.L #1, D0 (sets X, N, C flags; clears Z, V)
+        0x4840U  // SWAP D0
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SUBQ
+    EXPECT_TRUE(flag_x());
+    EXPECT_TRUE(flag_c());
+
+    cpu.step(bus);          // SWAP D0
+    EXPECT_TRUE(flag_x());  // X preserved
+    EXPECT_FALSE(flag_c()); // C cleared
+    EXPECT_FALSE(flag_v()); // V cleared
+    EXPECT_TRUE(flag_n());  // N set (0xFFFFFFFF)
+    EXPECT_FALSE(flag_z());
+}
+
+TEST_F(CpuTest, SwapClearsOverflowFlag) {
+    load_program({
+        0x707FU, // MOVEQ #127, D0
+        0x5200U, // ADDQ.B #1, D0 (127 + 1 = 128 -> overflow V = 1)
+        0x4840U  // SWAP D0
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // ADDQ.B
+    EXPECT_TRUE(flag_v());
+
+    cpu.step(bus);          // SWAP D0
+    EXPECT_FALSE(flag_v()); // V cleared
+}
+
+TEST_F(CpuTest, SwapDifferentRegisters) {
+    load_program({
+        0x762AU, // MOVEQ #42, D3
+        0x7E07U, // MOVEQ #7, D7
+        0x4843U, // SWAP D3
+        0x4847U  // SWAP D7
+    });
+
+    cpu.step(bus); // MOVEQ D3
+    cpu.step(bus); // MOVEQ D7
+    cpu.step(bus); // SWAP D3
+    EXPECT_EQ(cpu.D(3), 0x002A0000U);
+    cpu.step(bus); // SWAP D7
+    EXPECT_EQ(cpu.D(7), 0x00070000U);
 }

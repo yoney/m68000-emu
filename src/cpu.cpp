@@ -138,6 +138,9 @@ constexpr std::uint16_t lea_pattern = 0x41C0U;
 constexpr std::uint16_t pea_mask = 0xFFC0U;
 constexpr std::uint16_t pea_pattern = 0x4840U;
 
+constexpr std::uint16_t swap_mask = 0xFFF8U;
+constexpr std::uint16_t swap_pattern = 0x4840U;
+
 [[nodiscard]] constexpr std::uint32_t
 add_displacement(std::uint32_t address, std::int32_t displacement) noexcept {
     return address + static_cast<std::uint32_t>(displacement);
@@ -267,6 +270,9 @@ void Cpu::step(Bus &bus) {
     } else if ((opcode & pea_mask) == pea_pattern &&
                (opcode & 0x0038U) != 0x0000U) {
         execute_pea(bus, opcode);
+        return;
+    } else if ((opcode & swap_mask) == swap_pattern) {
+        execute_swap(opcode);
         return;
     }
 
@@ -606,6 +612,17 @@ void Cpu::execute_pea(Bus &bus, std::uint16_t opcode) {
                                            OperandSize::long_word);
     A_[7] -= 4U;
     write_long(bus, A_[7], resolved.address);
+}
+
+void Cpu::execute_swap(std::uint16_t opcode) {
+    std::size_t index = opcode & 0x0007U;
+    D_[index] = (D_[index] << 16U) | (D_[index] >> 16U);
+    status_ &= static_cast<std::uint16_t>(~nzvc_flags);
+    if (D_[index] == 0) {
+        status_ |= zero_flag;
+    } else if ((D_[index] & 0x80000000U) != 0) {
+        status_ |= negative_flag;
+    }
 }
 
 Cpu::ResolvedAddress Cpu::resolve_memory_address(Bus &bus, std::uint16_t opcode,
