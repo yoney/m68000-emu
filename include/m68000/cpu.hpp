@@ -33,6 +33,7 @@ public:
     }
     [[nodiscard]] std::uint32_t pc() const noexcept { return pc_; }
     [[nodiscard]] std::uint16_t status() const noexcept { return status_; }
+    void set_status(std::uint16_t status) noexcept { status_ = status; }
 
     enum class OperandSize : std::uint8_t {
         byte,

@@ -2,9 +2,11 @@
 #include "m68000/cpu.hpp"
 
 #include <cstdint>
+#include <format>
 #include <gtest/gtest.h>
 #include <initializer_list>
 #include <map>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -103,6 +105,14 @@ protected:
     }
 
     void load_program(std::initializer_list<std::uint16_t> opcodes,
+                      std::uint32_t address = kDefaultPc) {
+        for (std::uint16_t op : opcodes) {
+            bus.poke16(address, op);
+            address += 2U;
+        }
+    }
+
+    void load_program(const std::vector<std::uint16_t> &opcodes,
                       std::uint32_t address = kDefaultPc) {
         for (std::uint16_t op : opcodes) {
             bus.poke16(address, op);
@@ -300,67 +310,47 @@ TEST_F(CpuTest, StepThrowsOnUnsupportedInstruction) {
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
 
-TEST_F(CpuTest, MoveqLoadsPositiveImmediateAndClearsFlags) {
-    load_program({0x762AU}); // MOVEQ #42, D3
+struct MoveqTestParam {
+    const char *test_name;
+    std::size_t reg_index;
+    std::int8_t immediate;
+    std::uint32_t expected_value;
+    bool expected_z;
+    bool expected_n;
+};
+
+class MoveqImmediateTest
+    : public CpuTest,
+      public ::testing::WithParamInterface<MoveqTestParam> {};
+
+TEST_P(MoveqImmediateTest, LoadsImmediateAndSetsFlagsCorrectly) {
+    const auto &param = GetParam();
+    const std::uint16_t opcode = static_cast<std::uint16_t>(
+        0x7000U | (static_cast<std::uint16_t>(param.reg_index) << 9U) |
+        static_cast<std::uint8_t>(param.immediate));
+    load_program({opcode});
 
     cpu.step(bus);
 
-    EXPECT_EQ(cpu.D(3), 42U);
+    EXPECT_EQ(cpu.D(param.reg_index), param.expected_value);
     EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
-    EXPECT_EQ(flags_nzvc(), 0U);
-}
-
-TEST_F(CpuTest, MoveqSignExtendsNegativeImmediateAndSetsNegativeFlag) {
-    load_program({0x70FFU}); // MOVEQ #-1, D0
-
-    cpu.step(bus);
-
-    EXPECT_EQ(cpu.D(0), 0xFFFFFFFFU);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
-    EXPECT_TRUE(flag_n());
-    EXPECT_FALSE(flag_z());
+    EXPECT_EQ(flag_z(), param.expected_z);
+    EXPECT_EQ(flag_n(), param.expected_n);
     EXPECT_FALSE(flag_v());
     EXPECT_FALSE(flag_c());
 }
 
-TEST_F(CpuTest, MoveqSetsZeroFlagWhenImmediateIsZero) {
-    load_program({0x7A00U}); // MOVEQ #0, D5
-
-    cpu.step(bus);
-
-    EXPECT_EQ(cpu.D(5), 0U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
-    EXPECT_TRUE(flag_z());
-    EXPECT_FALSE(flag_n());
-    EXPECT_FALSE(flag_v());
-    EXPECT_FALSE(flag_c());
-}
-
-TEST_F(CpuTest, MoveqSignExtendsMinimumImmediate) {
-    load_program({0x7080U}); // MOVEQ #-128, D0
-
-    cpu.step(bus);
-
-    EXPECT_EQ(cpu.D(0), 0xFFFFFF80U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
-    EXPECT_TRUE(flag_n());
-    EXPECT_FALSE(flag_z());
-    EXPECT_FALSE(flag_v());
-    EXPECT_FALSE(flag_c());
-}
-
-TEST_F(CpuTest, MoveqLoadsMaximumPositiveImmediate) {
-    load_program({0x707FU}); // MOVEQ #127, D0
-
-    cpu.step(bus);
-
-    EXPECT_EQ(cpu.D(0), 0x0000007FU);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
-    EXPECT_FALSE(flag_n());
-    EXPECT_FALSE(flag_z());
-    EXPECT_FALSE(flag_v());
-    EXPECT_FALSE(flag_c());
-}
+INSTANTIATE_TEST_SUITE_P(
+    ImmediateValues, MoveqImmediateTest,
+    ::testing::Values(
+        MoveqTestParam{"Zero_D5", 5, 0, 0x00000000U, true, false},
+        MoveqTestParam{"Positive_D3", 3, 42, 0x0000002AU, false, false},
+        MoveqTestParam{"MaxPositive_D0", 0, 127, 0x0000007FU, false, false},
+        MoveqTestParam{"MinusOne_D0", 0, -1, 0xFFFFFFFFU, false, true},
+        MoveqTestParam{"MinNegative_D0", 0, -128, 0xFFFFFF80U, false, true}),
+    [](const ::testing::TestParamInfo<MoveqTestParam> &info) {
+        return info.param.test_name;
+    });
 
 TEST_F(CpuTest, BraShortForwardBranchesCorrectlyAndPreservesFlags) {
     load_program(
@@ -516,37 +506,141 @@ TEST_F(CpuTest, BccWordAdvancesPcAndReadsExtensionWhenConditionIsFalse) {
     EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
 }
 
-TEST_F(CpuTest, BneBranchesWhenZeroFlagIsClear) {
-    load_program({0x7001U, 0x6604U}); // MOVEQ #1, D0 (Z=0); BNE.S *+6
-    cpu.step(bus);
+struct BccConditionParam {
+    const char *test_name;
+    std::uint8_t condition_code;
+    std::uint16_t ccr_flags;
+    bool should_branch;
+};
+
+class BccConditionTest
+    : public CpuTest,
+      public ::testing::WithParamInterface<BccConditionParam> {};
+
+TEST_P(BccConditionTest, EvaluatesConditionCorrectly) {
+    const auto &param = GetParam();
+    cpu.set_status(0x2700U | param.ccr_flags);
+
+    // 0x6004U | (condition << 8) -> Bcc.S *+6 (offset +4 from PC+2)
+    const std::uint16_t opcode = static_cast<std::uint16_t>(
+        0x6004U | (static_cast<std::uint16_t>(param.condition_code) << 8U));
+    load_program({opcode, 0x4E71U, 0x4E71U});
+
+    const auto status_before = cpu.status();
     cpu.step(bus);
 
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
+    if (param.should_branch) {
+        EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
+    } else {
+        EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
+    }
+    EXPECT_EQ(cpu.status(), status_before);
 }
 
-TEST_F(CpuTest, BneDoesNotBranchWhenZeroFlagIsSet) {
-    load_program({0x7000U, 0x6604U}); // MOVEQ #0, D0 (Z=1); BNE.S *+6
-    cpu.step(bus);
-    cpu.step(bus);
+INSTANTIATE_TEST_SUITE_P(
+    AllConditions, BccConditionTest,
+    ::testing::Values(
+        // HI (High): !C && !Z (condition 2)
+        BccConditionParam{"Bhi_Taken_WhenCarryAndZeroClear", 2, 0, true},
+        BccConditionParam{"Bhi_NotTaken_WhenCarrySet", 2, m68000::carry_flag,
+                          false},
+        BccConditionParam{"Bhi_NotTaken_WhenZeroSet", 2, m68000::zero_flag,
+                          false},
+        BccConditionParam{"Bhi_NotTaken_WhenBothSet", 2,
+                          m68000::carry_flag | m68000::zero_flag, false},
 
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
-}
+        // LS (Low or Same): C || Z (condition 3)
+        BccConditionParam{"Bls_Taken_WhenCarrySet", 3, m68000::carry_flag,
+                          true},
+        BccConditionParam{"Bls_Taken_WhenZeroSet", 3, m68000::zero_flag, true},
+        BccConditionParam{"Bls_Taken_WhenBothSet", 3,
+                          m68000::carry_flag | m68000::zero_flag, true},
+        BccConditionParam{"Bls_NotTaken_WhenBothClear", 3, 0, false},
 
-TEST_F(CpuTest, BmiBranchesWhenNegativeFlagIsSet) {
-    load_program({0x70FFU, 0x6B04U}); // MOVEQ #-1, D0 (N=1); BMI.S *+6
-    cpu.step(bus);
-    cpu.step(bus);
+        // CC / HS (Carry Clear / High or Same): !C (condition 4)
+        BccConditionParam{"Bcc_Taken_WhenCarryClear", 4, 0, true},
+        BccConditionParam{"Bcc_NotTaken_WhenCarrySet", 4, m68000::carry_flag,
+                          false},
 
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
-}
+        // CS / LO (Carry Set / Low): C (condition 5)
+        BccConditionParam{"Bcs_Taken_WhenCarrySet", 5, m68000::carry_flag,
+                          true},
+        BccConditionParam{"Bcs_NotTaken_WhenCarryClear", 5, 0, false},
 
-TEST_F(CpuTest, BplBranchesWhenNegativeFlagIsClear) {
-    load_program({0x7001U, 0x6A04U}); // MOVEQ #1, D0 (N=0); BPL.S *+6
-    cpu.step(bus);
-    cpu.step(bus);
+        // NE (Not Equal): !Z (condition 6)
+        BccConditionParam{"Bne_Taken_WhenZeroClear", 6, 0, true},
+        BccConditionParam{"Bne_NotTaken_WhenZeroSet", 6, m68000::zero_flag,
+                          false},
 
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
-}
+        // EQ (Equal): Z (condition 7)
+        BccConditionParam{"Beq_Taken_WhenZeroSet", 7, m68000::zero_flag, true},
+        BccConditionParam{"Beq_NotTaken_WhenZeroClear", 7, 0, false},
+
+        // VC (Overflow Clear): !V (condition 8)
+        BccConditionParam{"Bvc_Taken_WhenOverflowClear", 8, 0, true},
+        BccConditionParam{"Bvc_NotTaken_WhenOverflowSet", 8,
+                          m68000::overflow_flag, false},
+
+        // VS (Overflow Set): V (condition 9)
+        BccConditionParam{"Bvs_Taken_WhenOverflowSet", 9, m68000::overflow_flag,
+                          true},
+        BccConditionParam{"Bvs_NotTaken_WhenOverflowClear", 9, 0, false},
+
+        // PL (Plus): !N (condition 10)
+        BccConditionParam{"Bpl_Taken_WhenNegativeClear", 10, 0, true},
+        BccConditionParam{"Bpl_NotTaken_WhenNegativeSet", 10,
+                          m68000::negative_flag, false},
+
+        // MI (Minus): N (condition 11)
+        BccConditionParam{"Bmi_Taken_WhenNegativeSet", 11,
+                          m68000::negative_flag, true},
+        BccConditionParam{"Bmi_NotTaken_WhenNegativeClear", 11, 0, false},
+
+        // GE (Greater or Equal): N == V (condition 12)
+        BccConditionParam{"Bge_Taken_WhenNegativeAndOverflowClear", 12, 0,
+                          true},
+        BccConditionParam{"Bge_Taken_WhenNegativeAndOverflowSet", 12,
+                          m68000::negative_flag | m68000::overflow_flag, true},
+        BccConditionParam{"Bge_NotTaken_WhenNegativeSetOverflowClear", 12,
+                          m68000::negative_flag, false},
+        BccConditionParam{"Bge_NotTaken_WhenNegativeClearOverflowSet", 12,
+                          m68000::overflow_flag, false},
+
+        // LT (Less Than): N != V (condition 13)
+        BccConditionParam{"Blt_Taken_WhenNegativeSetOverflowClear", 13,
+                          m68000::negative_flag, true},
+        BccConditionParam{"Blt_Taken_WhenNegativeClearOverflowSet", 13,
+                          m68000::overflow_flag, true},
+        BccConditionParam{"Blt_NotTaken_WhenNegativeAndOverflowClear", 13, 0,
+                          false},
+        BccConditionParam{"Blt_NotTaken_WhenNegativeAndOverflowSet", 13,
+                          m68000::negative_flag | m68000::overflow_flag, false},
+
+        // GT (Greater Than): !Z && (N == V) (condition 14)
+        BccConditionParam{"Bgt_Taken_WhenZeroClearAndSignsMatch", 14, 0, true},
+        BccConditionParam{"Bgt_Taken_WhenZeroClearAndSignsBothSet", 14,
+                          m68000::negative_flag | m68000::overflow_flag, true},
+        BccConditionParam{"Bgt_NotTaken_WhenZeroSet", 14, m68000::zero_flag,
+                          false},
+        BccConditionParam{"Bgt_NotTaken_WhenNegativeSetOverflowClear", 14,
+                          m68000::negative_flag, false},
+        BccConditionParam{"Bgt_NotTaken_WhenNegativeClearOverflowSet", 14,
+                          m68000::overflow_flag, false},
+
+        // LE (Less or Equal): Z || (N != V) (condition 15)
+        BccConditionParam{"Ble_Taken_WhenZeroSet", 15, m68000::zero_flag, true},
+        BccConditionParam{"Ble_Taken_WhenNegativeSetOverflowClear", 15,
+                          m68000::negative_flag, true},
+        BccConditionParam{"Ble_Taken_WhenNegativeClearOverflowSet", 15,
+                          m68000::overflow_flag, true},
+        BccConditionParam{"Ble_NotTaken_WhenZeroClearAndSignsMatch", 15, 0,
+                          false},
+        BccConditionParam{"Ble_NotTaken_WhenZeroClearAndSignsBothSet", 15,
+                          m68000::negative_flag | m68000::overflow_flag,
+                          false}),
+    [](const ::testing::TestParamInfo<BccConditionParam> &info) {
+        return info.param.test_name;
+    });
 
 TEST_F(CpuTest, BsrShortPushesReturnAddressAndBranches) {
     load_program({0x6104U, 0x4E71U, 0x4E71U}); // BSR.S *+6
@@ -1462,53 +1556,41 @@ TEST_F(CpuTest, SubqLongSetsBorrowAndExtendOnBorrow) {
     EXPECT_TRUE(flag_x());
 }
 
-TEST_F(CpuTest, ClrByteDataRegisterClearsLowByteAndPreservesUpperBits) {
-    load_program({
-        0x70FFU, // MOVEQ #-1, D0 -> 0xFFFFFFFF
-        0x4200U  // CLR.B D0
-    });
+struct ClrRegisterParam {
+    const char *test_name;
+    std::size_t reg_index;
+    std::uint16_t moveq_opcode;
+    std::uint16_t clr_opcode;
+    std::uint32_t expected_value;
+};
 
-    cpu.step(bus);
-    cpu.step(bus);
+class ClrRegisterSizeTest
+    : public CpuTest,
+      public ::testing::WithParamInterface<ClrRegisterParam> {};
 
-    EXPECT_EQ(cpu.D(0), 0xFFFFFF00U);
+TEST_P(ClrRegisterSizeTest, ClearsOperandAndPreservesUpperBits) {
+    const auto &param = GetParam();
+    load_program({param.moveq_opcode, param.clr_opcode});
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // CLR
+
+    EXPECT_EQ(cpu.D(param.reg_index), param.expected_value);
     EXPECT_TRUE(flag_z());
     EXPECT_FALSE(flag_n());
     EXPECT_FALSE(flag_v());
     EXPECT_FALSE(flag_c());
 }
 
-TEST_F(CpuTest, ClrWordDataRegisterClearsLowWordAndPreservesUpperWord) {
-    load_program({
-        0x72FFU, // MOVEQ #-1, D1 -> 0xFFFFFFFF
-        0x4241U  // CLR.W D1
+INSTANTIATE_TEST_SUITE_P(
+    OperandSizes, ClrRegisterSizeTest,
+    ::testing::Values(
+        ClrRegisterParam{"Byte", 0, 0x70FFU, 0x4200U, 0xFFFFFF00U},
+        ClrRegisterParam{"Word", 1, 0x72FFU, 0x4241U, 0xFFFF0000U},
+        ClrRegisterParam{"Long", 2, 0x74FFU, 0x4282U, 0x00000000U}),
+    [](const ::testing::TestParamInfo<ClrRegisterParam> &info) {
+        return info.param.test_name;
     });
-
-    cpu.step(bus);
-    cpu.step(bus);
-
-    EXPECT_EQ(cpu.D(1), 0xFFFF0000U);
-    EXPECT_TRUE(flag_z());
-    EXPECT_FALSE(flag_n());
-    EXPECT_FALSE(flag_v());
-    EXPECT_FALSE(flag_c());
-}
-
-TEST_F(CpuTest, ClrLongDataRegisterClearsEntireRegister) {
-    load_program({
-        0x74FFU, // MOVEQ #-1, D2 -> 0xFFFFFFFF
-        0x4282U  // CLR.L D2
-    });
-
-    cpu.step(bus);
-    cpu.step(bus);
-
-    EXPECT_EQ(cpu.D(2), 0x00000000U);
-    EXPECT_TRUE(flag_z());
-    EXPECT_FALSE(flag_n());
-    EXPECT_FALSE(flag_v());
-    EXPECT_FALSE(flag_c());
-}
 
 TEST_F(CpuTest, ClrPreservesExtendFlag) {
     load_program({
@@ -1671,53 +1753,63 @@ TEST_F(CpuTest, ClrReservedSizeThrowsUnsupportedInstruction) {
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
 
-TEST_F(CpuTest, TstByteZeroSetsZeroAndClearsNegative) {
-    load_program({
-        0x7000U, // MOVEQ #0, D0
-        0x4A00U  // TST.B D0
-    });
+struct TstRegisterParam {
+    const char *test_name;
+    std::size_t reg_index;
+    std::uint16_t moveq_opcode;
+    std::uint16_t tst_opcode;
+    std::uint32_t expected_value;
+    bool expected_z;
+    bool expected_n;
+};
 
-    cpu.step(bus);
-    cpu.step(bus);
+class TstRegisterSizeTest
+    : public CpuTest,
+      public ::testing::WithParamInterface<TstRegisterParam> {};
 
-    EXPECT_EQ(cpu.D(0), 0U);
-    EXPECT_TRUE(flag_z());
-    EXPECT_FALSE(flag_n());
+TEST_P(TstRegisterSizeTest, EvaluatesZeroAndNegativeFlags) {
+    const auto &param = GetParam();
+    load_program({param.moveq_opcode, param.tst_opcode});
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // TST
+
+    EXPECT_EQ(cpu.D(param.reg_index), param.expected_value);
+    EXPECT_EQ(flag_z(), param.expected_z);
+    EXPECT_EQ(flag_n(), param.expected_n);
     EXPECT_FALSE(flag_v());
     EXPECT_FALSE(flag_c());
 }
 
-TEST_F(CpuTest, TstBytePositiveClearsZeroAndNegative) {
-    load_program({
-        0x707FU, // MOVEQ #127, D0
-        0x4A00U  // TST.B D0
+INSTANTIATE_TEST_SUITE_P(
+    OperandSizesAndSigns, TstRegisterSizeTest,
+    ::testing::Values(
+        // Byte: size 00 (0x4A00U) on D0
+        TstRegisterParam{"Byte_Zero", 0, 0x7000U, 0x4A00U, 0x00000000U, true,
+                         false},
+        TstRegisterParam{"Byte_Positive", 0, 0x707FU, 0x4A00U, 0x0000007FU,
+                         false, false},
+        TstRegisterParam{"Byte_Negative", 0, 0x7080U, 0x4A00U, 0xFFFFFF80U,
+                         false, true},
+
+        // Word: size 01 (0x4A41U) on D1
+        TstRegisterParam{"Word_Zero", 1, 0x7200U, 0x4A41U, 0x00000000U, true,
+                         false},
+        TstRegisterParam{"Word_Positive", 1, 0x7201U, 0x4A41U, 0x00000001U,
+                         false, false},
+        TstRegisterParam{"Word_Negative", 1, 0x72FFU, 0x4A41U, 0xFFFFFFFFU,
+                         false, true},
+
+        // Long: size 10 (0x4A82U) on D2
+        TstRegisterParam{"Long_Zero", 2, 0x7400U, 0x4A82U, 0x00000000U, true,
+                         false},
+        TstRegisterParam{"Long_Positive", 2, 0x742AU, 0x4A82U, 0x0000002AU,
+                         false, false},
+        TstRegisterParam{"Long_Negative", 2, 0x74FFU, 0x4A82U, 0xFFFFFFFFU,
+                         false, true}),
+    [](const ::testing::TestParamInfo<TstRegisterParam> &info) {
+        return info.param.test_name;
     });
-
-    cpu.step(bus);
-    cpu.step(bus);
-
-    EXPECT_EQ(cpu.D(0), 0x7FU);
-    EXPECT_FALSE(flag_z());
-    EXPECT_FALSE(flag_n());
-    EXPECT_FALSE(flag_v());
-    EXPECT_FALSE(flag_c());
-}
-
-TEST_F(CpuTest, TstByteNegativeSetsNegativeAndClearsZero) {
-    load_program({
-        0x7080U, // MOVEQ #-128, D0 -> 0xFFFFFF80
-        0x4A00U  // TST.B D0
-    });
-
-    cpu.step(bus);
-    cpu.step(bus);
-
-    EXPECT_EQ(cpu.D(0), 0xFFFFFF80U);
-    EXPECT_FALSE(flag_z());
-    EXPECT_TRUE(flag_n());
-    EXPECT_FALSE(flag_v());
-    EXPECT_FALSE(flag_c());
-}
 
 TEST_F(CpuTest, TstByteIgnoresUpperBits) {
     load_program({
@@ -1735,45 +1827,6 @@ TEST_F(CpuTest, TstByteIgnoresUpperBits) {
     EXPECT_FALSE(flag_n());
 }
 
-TEST_F(CpuTest, TstWordZeroSetsZeroAndClearsNegative) {
-    load_program({
-        0x7200U, // MOVEQ #0, D1
-        0x4A41U  // TST.W D1
-    });
-
-    cpu.step(bus);
-    cpu.step(bus);
-
-    EXPECT_TRUE(flag_z());
-    EXPECT_FALSE(flag_n());
-}
-
-TEST_F(CpuTest, TstWordPositiveClearsZeroAndNegative) {
-    load_program({
-        0x7201U, // MOVEQ #1, D1
-        0x4A41U  // TST.W D1
-    });
-
-    cpu.step(bus);
-    cpu.step(bus);
-
-    EXPECT_FALSE(flag_z());
-    EXPECT_FALSE(flag_n());
-}
-
-TEST_F(CpuTest, TstWordNegativeSetsNegativeAndClearsZero) {
-    load_program({
-        0x72FFU, // MOVEQ #-1, D1 -> 0xFFFFFFFF
-        0x4A41U  // TST.W D1
-    });
-
-    cpu.step(bus);
-    cpu.step(bus);
-
-    EXPECT_FALSE(flag_z());
-    EXPECT_TRUE(flag_n());
-}
-
 TEST_F(CpuTest, TstWordIgnoresUpperWord) {
     load_program({
         0x72FFU, // MOVEQ #-1, D1 -> 0xFFFFFFFF
@@ -1788,45 +1841,6 @@ TEST_F(CpuTest, TstWordIgnoresUpperWord) {
     EXPECT_EQ(cpu.D(1), 0xFFFF0000U);
     EXPECT_TRUE(flag_z());
     EXPECT_FALSE(flag_n());
-}
-
-TEST_F(CpuTest, TstLongZeroSetsZeroAndClearsNegative) {
-    load_program({
-        0x7400U, // MOVEQ #0, D2
-        0x4A82U  // TST.L D2
-    });
-
-    cpu.step(bus);
-    cpu.step(bus);
-
-    EXPECT_TRUE(flag_z());
-    EXPECT_FALSE(flag_n());
-}
-
-TEST_F(CpuTest, TstLongPositiveClearsZeroAndNegative) {
-    load_program({
-        0x742AU, // MOVEQ #42, D2
-        0x4A82U  // TST.L D2
-    });
-
-    cpu.step(bus);
-    cpu.step(bus);
-
-    EXPECT_FALSE(flag_z());
-    EXPECT_FALSE(flag_n());
-}
-
-TEST_F(CpuTest, TstLongNegativeSetsNegativeAndClearsZero) {
-    load_program({
-        0x74FFU, // MOVEQ #-1, D2 -> 0xFFFFFFFF
-        0x4A82U  // TST.L D2
-    });
-
-    cpu.step(bus);
-    cpu.step(bus);
-
-    EXPECT_FALSE(flag_z());
-    EXPECT_TRUE(flag_n());
 }
 
 TEST_F(CpuTest, TstPreservesExtendFlag) {
@@ -2445,88 +2459,150 @@ TEST_F(CpuTest, CmpByteProgramCounterIndexNegativeDisplacement) {
     EXPECT_FALSE(flag_v());
 }
 
-TEST_F(CpuTest, JmpAddressRegisterIndirect) {
-    load_program({
-        0x5488U, // ADDQ.L #2, A0
-        0x4ED0U  // JMP (A0)
-    });
+enum class ControlInstruction { Jmp, Jsr, Lea, Pea };
 
-    cpu.step(bus); // ADDQ.L
-    EXPECT_EQ(cpu.A(0), 2U);
+struct ControlAddressingModeCase {
+    const char *mode_name;
+    std::uint16_t mode_reg_mask;
+    std::vector<std::uint16_t> setup_ops;
+    std::vector<std::uint16_t> extension_words;
+    std::uint32_t expected_ea;
+};
 
-    cpu.step(bus); // JMP (A0)
-    EXPECT_EQ(cpu.pc(), 2U);
-    EXPECT_EQ(cpu.A(0), 2U);
+using ControlModeTestParam =
+    std::tuple<ControlInstruction, ControlAddressingModeCase>;
+
+inline void PrintTo(const ControlModeTestParam &param, std::ostream *os) {
+    const auto instruction = std::get<0>(param);
+    const auto &mode = std::get<1>(param);
+    const char *inst_name = instruction == ControlInstruction::Jmp   ? "JMP"
+                            : instruction == ControlInstruction::Jsr ? "JSR"
+                            : instruction == ControlInstruction::Lea ? "LEA"
+                                                                     : "PEA";
+    *os << inst_name << " " << mode.mode_name;
 }
 
-TEST_F(CpuTest, JmpAddressRegisterDisplacement) {
-    load_program({
-        0x5888U, // ADDQ.L #4, A0
-        0x4EE8U, // JMP 16(A0)
-        0x0010U  // displacement +16
-    });
+const ControlAddressingModeCase kControlAddressingModes[] = {
+    ControlAddressingModeCase{"AddressRegisterIndirect",
+                              0x0010U,   // mode 2, reg 0 -> (A0)
+                              {0x5088U}, // ADDQ.L #8, A0 -> A0 = 8
+                              {},
+                              8U},
+    ControlAddressingModeCase{"AddressRegisterDisplacement",
+                              0x0028U,   // mode 5, reg 0 -> 16(A0)
+                              {0x5888U}, // ADDQ.L #4, A0 -> A0 = 4
+                              {0x0010U}, // displacement +16
+                              20U},
+    ControlAddressingModeCase{
+        "AddressRegisterIndex",
+        0x0030U,            // mode 6, reg 0 -> 4(A0, D1.W)
+        {0x5088U, 0x7210U}, // ADDQ.L #8, A0; MOVEQ #16, D1
+        {0x1004U},          // extension: D1.W, disp +4
+        28U},
+    ControlAddressingModeCase{"AbsoluteShort",
+                              0x0038U, // mode 7, reg 0 -> ($3000).W
+                              {},
+                              {0x3000U},
+                              0x3000U},
+    ControlAddressingModeCase{"AbsoluteLong",
+                              0x0039U, // mode 7, reg 1 -> ($00045678).L
+                              {},
+                              {0x0004U, 0x5678U},
+                              0x00045678U},
+    ControlAddressingModeCase{
+        "ProgramCounterDisplacement",
+        0x003AU, // mode 7, reg 2 -> d16(PC)
+        {},
+        {0x0020U}, // displacement +32 (relative to 0x1002)
+        0x1022U},
+    ControlAddressingModeCase{
+        "ProgramCounterIndex",
+        0x003BU,   // mode 7, reg 3 -> d8(PC, D1.W)
+        {0x7204U}, // MOVEQ #4, D1
+        {0x1006U}, // extension: D1.W, disp +6 (relative to 0x1004)
+        0x100EU},
+};
 
-    cpu.step(bus); // ADDQ.L
-    cpu.step(bus); // JMP 16(A0)
-    EXPECT_EQ(cpu.pc(), 20U);
-}
+class ValidControlAddressingModeTest
+    : public CpuTest,
+      public ::testing::WithParamInterface<ControlModeTestParam> {};
 
-TEST_F(CpuTest, JmpAddressRegisterIndex) {
-    load_program({
-        0x5088U, // ADDQ.L #8, A0
-        0x7210U, // MOVEQ #16, D1
-        0x4EF0U, // JMP 4(A0, D1.W)
-        0x1004U  // extension: D1.W, disp +4
-    });
+TEST_P(ValidControlAddressingModeTest, ExecutesAddressingModeCorrectly) {
+    const auto &[instruction, mode] = GetParam();
 
-    cpu.step(bus);            // ADDQ.L
-    cpu.step(bus);            // MOVEQ
-    cpu.step(bus);            // JMP
-    EXPECT_EQ(cpu.pc(), 28U); // 8 + 16 + 4
-}
+    std::uint16_t base_op = 0;
+    switch (instruction) {
+        case ControlInstruction::Jmp: base_op = 0x4EC0U; break;
+        case ControlInstruction::Jsr: base_op = 0x4E80U; break;
+        case ControlInstruction::Lea:
+            base_op = 0x43C0U; // LEA <ea>, A1
+            break;
+        case ControlInstruction::Pea: base_op = 0x4840U; break;
+    }
 
-TEST_F(CpuTest, JmpAbsoluteShort) {
-    load_program({
-        0x4EF8U, // JMP ($3000).W
-        0x3000U  // address
-    });
+    const std::uint16_t opcode =
+        static_cast<std::uint16_t>(base_op | mode.mode_reg_mask);
+
+    std::vector<std::uint16_t> program = mode.setup_ops;
+    program.push_back(opcode);
+    program.insert(program.end(), mode.extension_words.begin(),
+                   mode.extension_words.end());
+
+    load_program(program);
+
+    for (std::size_t i = 0; i < mode.setup_ops.size(); ++i) {
+        cpu.step(bus);
+    }
+
+    const auto pre_call_pc = cpu.pc();
+    const auto initial_sp = cpu.A(7);
+    const auto next_pc = static_cast<std::uint32_t>(
+        pre_call_pc + 2U + mode.extension_words.size() * 2U);
 
     cpu.step(bus);
-    EXPECT_EQ(cpu.pc(), 0x3000U);
+
+    switch (instruction) {
+        case ControlInstruction::Jmp:
+            EXPECT_EQ(cpu.pc(), mode.expected_ea);
+            break;
+        case ControlInstruction::Jsr:
+            EXPECT_EQ(cpu.pc(), mode.expected_ea);
+            EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+            EXPECT_EQ(bus.peek32(cpu.A(7)), next_pc);
+            break;
+        case ControlInstruction::Lea:
+            EXPECT_EQ(cpu.A(1), mode.expected_ea);
+            EXPECT_EQ(cpu.pc(), next_pc);
+            break;
+        case ControlInstruction::Pea:
+            EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+            EXPECT_EQ(bus.peek32(cpu.A(7)), mode.expected_ea);
+            EXPECT_EQ(cpu.pc(), next_pc);
+            break;
+    }
 }
 
-TEST_F(CpuTest, JmpAbsoluteLong) {
-    load_program({
-        0x4EF9U, // JMP ($00045678).L
-        0x0004U, // high word
-        0x5678U  // low word
+INSTANTIATE_TEST_SUITE_P(
+    ControlInstructions, ValidControlAddressingModeTest,
+    ::testing::Combine(::testing::Values(ControlInstruction::Jmp,
+                                         ControlInstruction::Jsr,
+                                         ControlInstruction::Lea,
+                                         ControlInstruction::Pea),
+                       ::testing::ValuesIn(kControlAddressingModes)),
+    [](const ::testing::TestParamInfo<ControlModeTestParam> &info) {
+        const auto instruction = std::get<0>(info.param);
+        const auto &mode = std::get<1>(info.param);
+        const char *inst_name = [instruction]() {
+            switch (instruction) {
+                case ControlInstruction::Jmp: return "Jmp";
+                case ControlInstruction::Jsr: return "Jsr";
+                case ControlInstruction::Lea: return "Lea";
+                case ControlInstruction::Pea: return "Pea";
+            }
+            return "Unknown";
+        }();
+        return std::format("{}_{}", inst_name, mode.mode_name);
     });
-
-    cpu.step(bus);
-    EXPECT_EQ(cpu.pc(), 0x00045678U);
-}
-
-TEST_F(CpuTest, JmpProgramCounterDisplacement) {
-    load_program({
-        0x4EFAU, // JMP d16(PC)
-        0x0020U  // displacement +32 (relative to 0x1002)
-    });
-
-    cpu.step(bus);
-    EXPECT_EQ(cpu.pc(), 0x1022U);
-}
-
-TEST_F(CpuTest, JmpProgramCounterIndex) {
-    load_program({
-        0x7204U, // MOVEQ #4, D1
-        0x4EFBU, // JMP d8(PC, D1.W)
-        0x1006U  // extension: D1.W, disp +6 (relative to 0x1004)
-    });
-
-    cpu.step(bus);                // MOVEQ
-    cpu.step(bus);                // JMP
-    EXPECT_EQ(cpu.pc(), 0x100EU); // 0x1004 + 4 + 6
-}
 
 TEST_F(CpuTest, JmpPreservesConditionCodes) {
     load_program({
@@ -2544,161 +2620,6 @@ TEST_F(CpuTest, JmpPreservesConditionCodes) {
     EXPECT_TRUE(flag_n());
     EXPECT_FALSE(flag_z());
     EXPECT_FALSE(flag_v());
-    EXPECT_FALSE(flag_c());
-}
-
-TEST_F(CpuTest, JmpDataRegisterDirectThrowsUnsupportedInstruction) {
-    load_program({
-        0x4EC0U // JMP D0 (mode 0, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, JmpAddressRegisterDirectThrowsUnsupportedInstruction) {
-    load_program({
-        0x4EC8U // JMP A0 (mode 1, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, JmpPostIncrementThrowsUnsupportedInstruction) {
-    load_program({
-        0x4ED8U // JMP (A0)+ (mode 3, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, JmpPreDecrementThrowsUnsupportedInstruction) {
-    load_program({
-        0x4EE0U // JMP -(A0) (mode 4, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, JmpImmediateThrowsUnsupportedInstruction) {
-    load_program({
-        0x4EFCU // JMP #<data> (mode 7, reg 4, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, JsrAddressRegisterIndirect) {
-    const auto initial_sp = cpu.A(7);
-
-    load_program({
-        0x5488U, // ADDQ.L #2, A0
-        0x4E90U  // JSR (A0)
-    });
-
-    cpu.step(bus); // ADDQ.L
-    EXPECT_EQ(cpu.A(0), 2U);
-
-    cpu.step(bus); // JSR (A0)
-    EXPECT_EQ(cpu.pc(), 2U);
-    EXPECT_EQ(cpu.A(0), 2U);
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-
-    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 4U);
-}
-
-TEST_F(CpuTest, JsrAddressRegisterDisplacement) {
-    const auto initial_sp = cpu.A(7);
-
-    load_program({
-        0x5888U, // ADDQ.L #4, A0
-        0x4EA8U, // JSR 16(A0) (2 words: opcode + disp)
-        0x0010U  // displacement +16
-    });
-
-    cpu.step(bus); // ADDQ.L
-    cpu.step(bus); // JSR 16(A0)
-    EXPECT_EQ(cpu.pc(), 20U);
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-    // Multi-word return address must point past the displacement word
-    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 6U);
-}
-
-TEST_F(CpuTest, JsrAddressRegisterIndex) {
-    const auto initial_sp = cpu.A(7);
-
-    load_program({
-        0x5088U, // ADDQ.L #8, A0
-        0x7210U, // MOVEQ #16, D1
-        0x4EB0U, // JSR 4(A0, D1.W)
-        0x1004U  // extension: D1.W, disp +4
-    });
-
-    cpu.step(bus);            // ADDQ.L
-    cpu.step(bus);            // MOVEQ
-    cpu.step(bus);            // JSR
-    EXPECT_EQ(cpu.pc(), 28U); // 8 + 16 + 4
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 8U);
-}
-
-TEST_F(CpuTest, JsrAbsoluteShort) {
-    const auto initial_sp = cpu.A(7);
-
-    load_program({
-        0x4EB8U, // JSR ($3000).W
-        0x3000U  // address
-    });
-
-    cpu.step(bus);
-    EXPECT_EQ(cpu.pc(), 0x3000U);
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 4U);
-}
-
-TEST_F(CpuTest, JsrAbsoluteLong) {
-    const auto initial_sp = cpu.A(7);
-
-    load_program({
-        0x4EB9U, // JSR ($00045678).L (3 words: opcode + 2 address words)
-        0x0004U, // high word
-        0x5678U  // low word
-    });
-
-    cpu.step(bus);
-    EXPECT_EQ(cpu.pc(), 0x00045678U);
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-    // 3-word instruction pushes return address after full 6-byte instruction
-    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 6U);
-}
-
-TEST_F(CpuTest, JsrProgramCounterDisplacement) {
-    const auto initial_sp = cpu.A(7);
-
-    load_program({
-        0x4EBAU, // JSR d16(PC)
-        0x0020U  // displacement +32 (relative to extension word at 0x1002)
-    });
-
-    cpu.step(bus);
-    EXPECT_EQ(cpu.pc(), 0x1022U);
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 4U);
-}
-
-TEST_F(CpuTest, JsrProgramCounterIndex) {
-    const auto initial_sp = cpu.A(7);
-
-    load_program({
-        0x7204U, // MOVEQ #4, D1
-        0x4EBBU, // JSR d8(PC, D1.W)
-        0x1006U  // extension: D1.W, disp +6 (relative to 0x1004)
-    });
-
-    cpu.step(bus);                // MOVEQ
-    cpu.step(bus);                // JSR
-    EXPECT_EQ(cpu.pc(), 0x100EU); // 0x1004 + 4 + 6
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-    EXPECT_EQ(bus.peek32(cpu.A(7)), kDefaultPc + 6U);
 }
 
 TEST_F(CpuTest, JsrPreservesConditionCodes) {
@@ -2717,50 +2638,9 @@ TEST_F(CpuTest, JsrPreservesConditionCodes) {
     EXPECT_TRUE(flag_n());
     EXPECT_FALSE(flag_z());
     EXPECT_FALSE(flag_v());
-    EXPECT_FALSE(flag_c());
 }
 
-TEST_F(CpuTest, JsrDataRegisterDirectThrowsUnsupportedInstruction) {
-    load_program({
-        0x4E80U // JSR D0 (mode 0, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, JsrAddressRegisterDirectThrowsUnsupportedInstruction) {
-    load_program({
-        0x4E88U // JSR A0 (mode 1, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, JsrPostIncrementThrowsUnsupportedInstruction) {
-    load_program({
-        0x4E98U // JSR (A0)+ (mode 3, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, JsrPreDecrementThrowsUnsupportedInstruction) {
-    load_program({
-        0x4EA0U // JSR -(A0) (mode 4, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, JsrImmediateThrowsUnsupportedInstruction) {
-    load_program({
-        0x4EBCU // JSR #<data> (mode 7, reg 4, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, LeaAddressRegisterIndirect) {
+TEST_F(CpuTest, LeaAddressRegisterIndirectDoesNotAccessMemory) {
     load_program({
         0x5088U, // ADDQ.L #8, A0
         0x43D0U  // LEA (A0), A1
@@ -2783,20 +2663,6 @@ TEST_F(CpuTest, LeaAddressRegisterIndirect) {
     EXPECT_TRUE(bus.writes.empty());
 }
 
-TEST_F(CpuTest, LeaAddressRegisterDisplacement) {
-    load_program({
-        0x5888U, // ADDQ.L #4, A0
-        0x43E8U, // LEA 16(A0), A1
-        0x0010U  // displacement +16
-    });
-
-    cpu.step(bus); // ADDQ.L
-    cpu.step(bus); // LEA 16(A0), A1
-    EXPECT_EQ(cpu.A(1), 20U);
-    EXPECT_EQ(cpu.A(0), 4U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
-}
-
 TEST_F(CpuTest, LeaAddressRegisterDisplacementSameRegister) {
     load_program({
         0x5088U, // ADDQ.L #8, A0
@@ -2807,70 +2673,6 @@ TEST_F(CpuTest, LeaAddressRegisterDisplacementSameRegister) {
     cpu.step(bus); // ADDQ.L
     cpu.step(bus); // LEA 4(A0), A0
     EXPECT_EQ(cpu.A(0), 12U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
-}
-
-TEST_F(CpuTest, LeaAddressRegisterIndex) {
-    load_program({
-        0x5088U, // ADDQ.L #8, A0
-        0x7210U, // MOVEQ #16, D1
-        0x45F0U, // LEA 4(A0, D1.W), A2
-        0x1004U  // extension: D1.W, disp +4
-    });
-
-    cpu.step(bus);            // ADDQ.L
-    cpu.step(bus);            // MOVEQ
-    cpu.step(bus);            // LEA
-    EXPECT_EQ(cpu.A(2), 28U); // 8 + 16 + 4
-    EXPECT_EQ(cpu.A(0), 8U);
-    EXPECT_EQ(cpu.D(1), 16U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
-}
-
-TEST_F(CpuTest, LeaAbsoluteShort) {
-    load_program({
-        0x41F8U, // LEA ($3000).W, A0
-        0x3000U  // address
-    });
-
-    cpu.step(bus);
-    EXPECT_EQ(cpu.A(0), 0x3000U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
-}
-
-TEST_F(CpuTest, LeaAbsoluteLong) {
-    load_program({
-        0x41F9U, // LEA ($00045678).L, A0
-        0x0004U, // high word
-        0x5678U  // low word
-    });
-
-    cpu.step(bus);
-    EXPECT_EQ(cpu.A(0), 0x00045678U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
-}
-
-TEST_F(CpuTest, LeaProgramCounterDisplacement) {
-    load_program({
-        0x41FAU, // LEA d16(PC), A0
-        0x0020U  // displacement +32 (relative to 0x1002)
-    });
-
-    cpu.step(bus);
-    EXPECT_EQ(cpu.A(0), 0x1022U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
-}
-
-TEST_F(CpuTest, LeaProgramCounterIndex) {
-    load_program({
-        0x7204U, // MOVEQ #4, D1
-        0x41FBU, // LEA d8(PC, D1.W), A0
-        0x1006U  // extension: D1.W, disp +6 (relative to 0x1004)
-    });
-
-    cpu.step(bus);                // MOVEQ
-    cpu.step(bus);                // LEA
-    EXPECT_EQ(cpu.A(0), 0x100EU); // 0x1004 + 4 + 6
     EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
 }
 
@@ -2894,50 +2696,9 @@ TEST_F(CpuTest, LeaPreservesConditionCodes) {
     EXPECT_TRUE(flag_n());
     EXPECT_FALSE(flag_z());
     EXPECT_FALSE(flag_v());
-    EXPECT_TRUE(flag_c());
 }
 
-TEST_F(CpuTest, LeaDataRegisterDirectThrowsUnsupportedInstruction) {
-    load_program({
-        0x41C0U // LEA D0, A0 (mode 0, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, LeaAddressRegisterDirectThrowsUnsupportedInstruction) {
-    load_program({
-        0x41C8U // LEA A0, A0 (mode 1, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, LeaPostIncrementThrowsUnsupportedInstruction) {
-    load_program({
-        0x41D8U // LEA (A0)+, A0 (mode 3, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, LeaPreDecrementThrowsUnsupportedInstruction) {
-    load_program({
-        0x41E0U // LEA -(A0), A0 (mode 4, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, LeaImmediateThrowsUnsupportedInstruction) {
-    load_program({
-        0x41FCU // LEA #<data>, A0 (mode 7, reg 4, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, PeaAddressRegisterIndirect) {
+TEST_F(CpuTest, PeaAddressRegisterIndirectDoesNotReadTargetAddress) {
     const auto initial_sp = cpu.A(7);
     load_program({
         0x5088U, // ADDQ.L #8, A0
@@ -2961,21 +2722,6 @@ TEST_F(CpuTest, PeaAddressRegisterIndirect) {
     EXPECT_EQ(bus.reads[0].address, kDefaultPc + 2U);
     ASSERT_EQ(bus.writes.size(), 2U); // 32-bit push via two 16-bit writes
     EXPECT_EQ(bus.peek32(cpu.A(7)), 8U);
-}
-
-TEST_F(CpuTest, PeaAddressRegisterDisplacement) {
-    const auto initial_sp = cpu.A(7);
-    load_program({
-        0x5888U, // ADDQ.L #4, A0
-        0x4868U, // PEA 16(A0)
-        0x0010U  // displacement +16
-    });
-
-    cpu.step(bus); // ADDQ.L
-    cpu.step(bus); // PEA 16(A0)
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-    EXPECT_EQ(bus.peek32(cpu.A(7)), 20U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
 }
 
 TEST_F(CpuTest, PeaAddressRegisterDisplacementUsingStackPointer) {
@@ -3005,80 +2751,6 @@ TEST_F(CpuTest, PeaAddressRegisterIndirectUsingStackPointer) {
     EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
 }
 
-TEST_F(CpuTest, PeaAddressRegisterIndex) {
-    const auto initial_sp = cpu.A(7);
-    load_program({
-        0x5088U, // ADDQ.L #8, A0
-        0x7210U, // MOVEQ #16, D1
-        0x4870U, // PEA 4(A0, D1.W)
-        0x1004U  // extension: D1.W, disp +4
-    });
-
-    cpu.step(bus); // ADDQ.L
-    cpu.step(bus); // MOVEQ
-    cpu.step(bus); // PEA
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-    EXPECT_EQ(bus.peek32(cpu.A(7)), 28U); // 8 + 16 + 4
-    EXPECT_EQ(cpu.A(0), 8U);
-    EXPECT_EQ(cpu.D(1), 16U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
-}
-
-TEST_F(CpuTest, PeaAbsoluteShort) {
-    const auto initial_sp = cpu.A(7);
-    load_program({
-        0x4878U, // PEA ($3000).W
-        0x3000U  // address
-    });
-
-    cpu.step(bus);
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-    EXPECT_EQ(bus.peek32(cpu.A(7)), 0x3000U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
-}
-
-TEST_F(CpuTest, PeaAbsoluteLong) {
-    const auto initial_sp = cpu.A(7);
-    load_program({
-        0x4879U, // PEA ($00045678).L
-        0x0004U, // high word
-        0x5678U  // low word
-    });
-
-    cpu.step(bus);
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-    EXPECT_EQ(bus.peek32(cpu.A(7)), 0x00045678U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
-}
-
-TEST_F(CpuTest, PeaProgramCounterDisplacement) {
-    const auto initial_sp = cpu.A(7);
-    load_program({
-        0x487AU, // PEA d16(PC)
-        0x0020U  // displacement +32 (relative to 0x1002)
-    });
-
-    cpu.step(bus);
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-    EXPECT_EQ(bus.peek32(cpu.A(7)), 0x1022U);
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
-}
-
-TEST_F(CpuTest, PeaProgramCounterIndex) {
-    const auto initial_sp = cpu.A(7);
-    load_program({
-        0x7204U, // MOVEQ #4, D1
-        0x487BU, // PEA d8(PC, D1.W)
-        0x1006U  // extension: D1.W, disp +6 (relative to 0x1004)
-    });
-
-    cpu.step(bus); // MOVEQ
-    cpu.step(bus); // PEA
-    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
-    EXPECT_EQ(bus.peek32(cpu.A(7)), 0x100EU); // 0x1004 + 4 + 6
-    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
-}
-
 TEST_F(CpuTest, PeaPreservesConditionCodes) {
     const auto initial_sp = cpu.A(7);
     load_program({
@@ -3104,37 +2776,53 @@ TEST_F(CpuTest, PeaPreservesConditionCodes) {
     EXPECT_TRUE(flag_c());
 }
 
-TEST_F(CpuTest, PeaAddressRegisterDirectThrowsUnsupportedInstruction) {
-    load_program({
-        0x4848U // PEA A0 (mode 1, non-control)
-    });
+struct InvalidControlModeParam {
+    const char *test_name;
+    std::uint16_t opcode;
+};
+
+class InvalidControlAddressingModeTest
+    : public CpuTest,
+      public ::testing::WithParamInterface<InvalidControlModeParam> {};
+
+TEST_P(InvalidControlAddressingModeTest, ThrowsUnsupportedInstruction) {
+    load_program({GetParam().opcode});
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
 
-TEST_F(CpuTest, PeaPostIncrementThrowsUnsupportedInstruction) {
-    load_program({
-        0x4858U // PEA (A0)+ (mode 3, non-control)
+INSTANTIATE_TEST_SUITE_P(
+    ControlInstructions, InvalidControlAddressingModeTest,
+    ::testing::Values(
+        // JMP (non-control addressing modes)
+        InvalidControlModeParam{"Jmp_DataRegisterDirect", 0x4EC0U},
+        InvalidControlModeParam{"Jmp_AddressRegisterDirect", 0x4EC8U},
+        InvalidControlModeParam{"Jmp_PostIncrement", 0x4ED8U},
+        InvalidControlModeParam{"Jmp_PreDecrement", 0x4EE0U},
+        InvalidControlModeParam{"Jmp_Immediate", 0x4EFCU},
+
+        // JSR (non-control addressing modes)
+        InvalidControlModeParam{"Jsr_DataRegisterDirect", 0x4E80U},
+        InvalidControlModeParam{"Jsr_AddressRegisterDirect", 0x4E88U},
+        InvalidControlModeParam{"Jsr_PostIncrement", 0x4E98U},
+        InvalidControlModeParam{"Jsr_PreDecrement", 0x4EA0U},
+        InvalidControlModeParam{"Jsr_Immediate", 0x4EBCU},
+
+        // LEA (non-control addressing modes)
+        InvalidControlModeParam{"Lea_DataRegisterDirect", 0x41C0U},
+        InvalidControlModeParam{"Lea_AddressRegisterDirect", 0x41C8U},
+        InvalidControlModeParam{"Lea_PostIncrement", 0x41D8U},
+        InvalidControlModeParam{"Lea_PreDecrement", 0x41E0U},
+        InvalidControlModeParam{"Lea_Immediate", 0x41FCU},
+
+        // PEA (non-control addressing modes; note mode 0 is SWAP Dn)
+        InvalidControlModeParam{"Pea_AddressRegisterDirect", 0x4848U},
+        InvalidControlModeParam{"Pea_PostIncrement", 0x4858U},
+        InvalidControlModeParam{"Pea_PreDecrement", 0x4860U},
+        InvalidControlModeParam{"Pea_Immediate", 0x487CU}),
+    [](const ::testing::TestParamInfo<InvalidControlModeParam> &info) {
+        return info.param.test_name;
     });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, PeaPreDecrementThrowsUnsupportedInstruction) {
-    load_program({
-        0x4860U // PEA -(A0) (mode 4, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
-
-TEST_F(CpuTest, PeaImmediateThrowsUnsupportedInstruction) {
-    load_program({
-        0x487CU // PEA #<data> (mode 7, reg 4, non-control)
-    });
-
-    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
-}
 
 TEST_F(CpuTest, SwapWordHalvesPositive) {
     load_program({
@@ -3240,18 +2928,32 @@ TEST_F(CpuTest, SwapClearsOverflowFlag) {
     EXPECT_FALSE(flag_v()); // V cleared
 }
 
-TEST_F(CpuTest, SwapDifferentRegisters) {
-    load_program({
-        0x762AU, // MOVEQ #42, D3
-        0x7E07U, // MOVEQ #7, D7
-        0x4843U, // SWAP D3
-        0x4847U  // SWAP D7
-    });
+class SwapRegisterSweepTest
+    : public CpuTest,
+      public ::testing::WithParamInterface<std::size_t> {};
 
-    cpu.step(bus); // MOVEQ D3
-    cpu.step(bus); // MOVEQ D7
-    cpu.step(bus); // SWAP D3
-    EXPECT_EQ(cpu.D(3), 0x002A0000U);
-    cpu.step(bus); // SWAP D7
-    EXPECT_EQ(cpu.D(7), 0x00070000U);
+TEST_P(SwapRegisterSweepTest, SwapsAnyDataRegister) {
+    const std::size_t reg_index = GetParam();
+    const std::uint16_t moveq_op = static_cast<std::uint16_t>(
+        0x702AU | (static_cast<std::uint16_t>(reg_index) << 9U));
+    const std::uint16_t swap_op = static_cast<std::uint16_t>(
+        0x4840U | static_cast<std::uint16_t>(reg_index));
+
+    load_program({moveq_op, swap_op});
+
+    cpu.step(bus); // MOVEQ
+    EXPECT_EQ(cpu.D(reg_index), 42U);
+
+    cpu.step(bus); // SWAP
+    EXPECT_EQ(cpu.D(reg_index), 0x002A0000U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
 }
+
+INSTANTIATE_TEST_SUITE_P(AllDataRegisters, SwapRegisterSweepTest,
+                         ::testing::Values(0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U),
+                         [](const ::testing::TestParamInfo<std::size_t> &info) {
+                             return std::format("D{}", info.param);
+                         });
