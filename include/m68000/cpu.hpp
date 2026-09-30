@@ -63,6 +63,7 @@ private:
     void execute_jmp(Bus &bus, std::uint16_t opcode);
     void execute_jsr(Bus &bus, std::uint16_t opcode);
     void execute_lea(Bus &bus, std::uint16_t opcode);
+    void execute_pea(Bus &bus, std::uint16_t opcode);
 
     std::array<std::uint32_t, 8> D_{}; // D0-D7
     std::array<std::uint32_t, 8> A_{}; // A0-A7

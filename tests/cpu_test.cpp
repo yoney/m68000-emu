@@ -2936,3 +2936,210 @@ TEST_F(CpuTest, LeaImmediateThrowsUnsupportedInstruction) {
 
     EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
 }
+
+TEST_F(CpuTest, PeaAddressRegisterIndirect) {
+    const auto initial_sp = cpu.A(7);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4850U  // PEA (A0)
+    });
+
+    cpu.step(bus); // ADDQ.L
+    EXPECT_EQ(cpu.A(0), 8U);
+
+    bus.reads.clear();
+    bus.writes.clear();
+
+    cpu.step(bus); // PEA (A0)
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), 8U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
+
+    // Verify PEA fetched opcode, wrote to stack, but did not read from the
+    // effective address
+    ASSERT_EQ(bus.reads.size(), 1U);
+    EXPECT_EQ(bus.reads[0].address, kDefaultPc + 2U);
+    ASSERT_EQ(bus.writes.size(), 2U); // 32-bit push via two 16-bit writes
+    EXPECT_EQ(bus.peek32(cpu.A(7)), 8U);
+}
+
+TEST_F(CpuTest, PeaAddressRegisterDisplacement) {
+    const auto initial_sp = cpu.A(7);
+    load_program({
+        0x5888U, // ADDQ.L #4, A0
+        0x4868U, // PEA 16(A0)
+        0x0010U  // displacement +16
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // PEA 16(A0)
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), 20U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
+}
+
+TEST_F(CpuTest, PeaAddressRegisterDisplacementUsingStackPointer) {
+    // Verifies effective address uses SP before it gets decremented
+    const auto initial_sp = cpu.A(7);
+    load_program({
+        0x486FU, // PEA 8(A7)
+        0x0008U  // displacement +8
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), initial_sp + 8U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
+}
+
+TEST_F(CpuTest, PeaAddressRegisterIndirectUsingStackPointer) {
+    // Verifies effective address uses SP before it gets decremented
+    const auto initial_sp = cpu.A(7);
+    load_program({
+        0x4857U // PEA (A7)
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), initial_sp);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 2U);
+}
+
+TEST_F(CpuTest, PeaAddressRegisterIndex) {
+    const auto initial_sp = cpu.A(7);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x7210U, // MOVEQ #16, D1
+        0x4870U, // PEA 4(A0, D1.W)
+        0x1004U  // extension: D1.W, disp +4
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // PEA
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), 28U); // 8 + 16 + 4
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_EQ(cpu.D(1), 16U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
+}
+
+TEST_F(CpuTest, PeaAbsoluteShort) {
+    const auto initial_sp = cpu.A(7);
+    load_program({
+        0x4878U, // PEA ($3000).W
+        0x3000U  // address
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), 0x3000U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
+}
+
+TEST_F(CpuTest, PeaAbsoluteLong) {
+    const auto initial_sp = cpu.A(7);
+    load_program({
+        0x4879U, // PEA ($00045678).L
+        0x0004U, // high word
+        0x5678U  // low word
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), 0x00045678U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
+}
+
+TEST_F(CpuTest, PeaProgramCounterDisplacement) {
+    const auto initial_sp = cpu.A(7);
+    load_program({
+        0x487AU, // PEA d16(PC)
+        0x0020U  // displacement +32 (relative to 0x1002)
+    });
+
+    cpu.step(bus);
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), 0x1022U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 4U);
+}
+
+TEST_F(CpuTest, PeaProgramCounterIndex) {
+    const auto initial_sp = cpu.A(7);
+    load_program({
+        0x7204U, // MOVEQ #4, D1
+        0x487BU, // PEA d8(PC, D1.W)
+        0x1006U  // extension: D1.W, disp +6 (relative to 0x1004)
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // PEA
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_EQ(bus.peek32(cpu.A(7)), 0x100EU); // 0x1004 + 4 + 6
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 6U);
+}
+
+TEST_F(CpuTest, PeaPreservesConditionCodes) {
+    const auto initial_sp = cpu.A(7);
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0x5380U, // SUBQ.L #1, D0 (sets X, N, C flags)
+        0x4850U  // PEA (A0)
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SUBQ
+    EXPECT_TRUE(flag_x());
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_TRUE(flag_c());
+
+    cpu.step(bus); // PEA (A0)
+    EXPECT_EQ(cpu.A(7), initial_sp - 4U);
+    EXPECT_TRUE(flag_x());
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_TRUE(flag_c());
+}
+
+TEST_F(CpuTest, PeaDataRegisterDirectThrowsUnsupportedInstruction) {
+    load_program({
+        0x4840U // PEA D0 (mode 0, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, PeaAddressRegisterDirectThrowsUnsupportedInstruction) {
+    load_program({
+        0x4848U // PEA A0 (mode 1, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, PeaPostIncrementThrowsUnsupportedInstruction) {
+    load_program({
+        0x4858U // PEA (A0)+ (mode 3, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, PeaPreDecrementThrowsUnsupportedInstruction) {
+    load_program({
+        0x4860U // PEA -(A0) (mode 4, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, PeaImmediateThrowsUnsupportedInstruction) {
+    load_program({
+        0x487CU // PEA #<data> (mode 7, reg 4, non-control)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
