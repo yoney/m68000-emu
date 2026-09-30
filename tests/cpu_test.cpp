@@ -325,8 +325,8 @@ class MoveqImmediateTest
 
 TEST_P(MoveqImmediateTest, LoadsImmediateAndSetsFlagsCorrectly) {
     const auto &param = GetParam();
-    const std::uint16_t opcode = static_cast<std::uint16_t>(
-        0x7000U | (static_cast<std::uint16_t>(param.reg_index) << 9U) |
+    const auto opcode = static_cast<std::uint16_t>(
+        0x7000U | (static_cast<std::uint32_t>(param.reg_index) << 9U) |
         static_cast<std::uint8_t>(param.immediate));
     load_program({opcode});
 
@@ -522,8 +522,8 @@ TEST_P(BccConditionTest, EvaluatesConditionCorrectly) {
     cpu.set_status(0x2700U | param.ccr_flags);
 
     // 0x6004U | (condition << 8) -> Bcc.S *+6 (offset +4 from PC+2)
-    const std::uint16_t opcode = static_cast<std::uint16_t>(
-        0x6004U | (static_cast<std::uint16_t>(param.condition_code) << 8U));
+    const auto opcode = static_cast<std::uint16_t>(
+        0x6004U | (static_cast<std::uint32_t>(param.condition_code) << 8U));
     load_program({opcode, 0x4E71U, 0x4E71U});
 
     const auto status_before = cpu.status();
@@ -2934,8 +2934,8 @@ class SwapRegisterSweepTest
 
 TEST_P(SwapRegisterSweepTest, SwapsAnyDataRegister) {
     const std::size_t reg_index = GetParam();
-    const std::uint16_t moveq_op = static_cast<std::uint16_t>(
-        0x702AU | (static_cast<std::uint16_t>(reg_index) << 9U));
+    const auto moveq_op = static_cast<std::uint16_t>(
+        0x702AU | (static_cast<std::uint32_t>(reg_index) << 9U));
     const std::uint16_t swap_op = static_cast<std::uint16_t>(
         0x4840U | static_cast<std::uint16_t>(reg_index));
 
