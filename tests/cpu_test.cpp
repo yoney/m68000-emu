@@ -2957,3 +2957,192 @@ INSTANTIATE_TEST_SUITE_P(AllDataRegisters, SwapRegisterSweepTest,
                          [](const ::testing::TestParamInfo<std::size_t> &info) {
                              return std::format("D{}", info.param);
                          });
+
+TEST_F(CpuTest, ExtWordSignExtendsPositiveByteAndPreservesUpperWord) {
+    load_program({
+        0x7001U, // MOVEQ #1, D0      -> 0x00000001
+        0x4840U, // SWAP D0           -> 0x00010000
+        0x5040U, // ADDQ.W #8, D0     -> 0x00010008 (low byte = 8, bits 15-8 =
+                 // 0)
+        0x4880U  // EXT.W D0
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SWAP
+    cpu.step(bus); // ADDQ.W
+    EXPECT_EQ(cpu.D(0), 0x00010008U);
+
+    cpu.step(bus); // EXT.W
+    EXPECT_EQ(cpu.D(0), 0x00010008U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, ExtWordSignExtendsNegativeByteAndPreservesUpperWord) {
+    load_program({
+        0x7012U, // MOVEQ #0x12, D0   -> 0x00000012
+        0x4840U, // SWAP D0           -> 0x00120000
+        0x5300U, // SUBQ.B #1, D0     -> 0x001200FF (-1 as byte)
+        0x4880U  // EXT.W D0          -> 0x0012FFFF
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SWAP
+    cpu.step(bus); // SUBQ.B
+    EXPECT_EQ(cpu.D(0), 0x001200FFU);
+
+    cpu.step(bus); // EXT.W
+    EXPECT_EQ(cpu.D(0), 0x0012FFFFU);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, ExtWordSetsZeroFlagWhenByteIsZero) {
+    load_program({
+        0x7012U, // MOVEQ #0x12, D0   -> 0x00000012
+        0x4840U, // SWAP D0           -> 0x00120000
+        0x4880U  // EXT.W D0          -> 0x00120000
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SWAP
+    cpu.step(bus); // EXT.W
+
+    EXPECT_EQ(cpu.D(0), 0x00120000U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, ExtLongSignExtendsPositiveWord) {
+    load_program({
+        0x70FFU, // MOVEQ #-1, D0     -> 0xFFFFFFFF
+        0x4240U, // CLR.W D0          -> 0xFFFF0000
+        0x5040U, // ADDQ.W #8, D0     -> 0xFFFF0008 (low word = 8, high word =
+                 // 0xFFFF)
+        0x48C0U  // EXT.L D0          -> 0x00000008
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // CLR.W
+    cpu.step(bus); // ADDQ.W
+    EXPECT_EQ(cpu.D(0), 0xFFFF0008U);
+
+    cpu.step(bus); // EXT.L
+    EXPECT_EQ(cpu.D(0), 0x00000008U);
+    EXPECT_EQ(cpu.pc(), kDefaultPc + 8U);
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, ExtLongSignExtendsNegativeWord) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0      -> 0x00000000
+        0x5340U, // SUBQ.W #1, D0     -> 0x0000FFFF (low word = 0xFFFF = -1,
+                 // high word = 0)
+        0x48C0U  // EXT.L D0          -> 0xFFFFFFFF
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SUBQ.W
+    EXPECT_EQ(cpu.D(0), 0x0000FFFFU);
+
+    cpu.step(bus); // EXT.L
+    EXPECT_EQ(cpu.D(0), 0xFFFFFFFFU);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, ExtLongSetsZeroFlagWhenWordIsZero) {
+    load_program({
+        0x70FFU, // MOVEQ #-1, D0     -> 0xFFFFFFFF
+        0x4240U, // CLR.W D0          -> 0xFFFF0000
+        0x48C0U  // EXT.L D0          -> 0x00000000
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // CLR.W
+    cpu.step(bus); // EXT.L
+
+    EXPECT_EQ(cpu.D(0), 0x00000000U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, ExtPreservesExtendFlag) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0x5380U, // SUBQ.L #1, D0 (0 - 1 = -1 -> borrow X = 1, C = 1)
+        0x4880U  // EXT.W D0
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SUBQ.L
+    EXPECT_TRUE(flag_x());
+    EXPECT_TRUE(flag_c());
+
+    cpu.step(bus);          // EXT.W
+    EXPECT_TRUE(flag_x());  // X preserved
+    EXPECT_FALSE(flag_c()); // C cleared
+    EXPECT_FALSE(flag_v()); // V cleared
+    EXPECT_TRUE(flag_n());  // N set (0xFFFFFFFF)
+    EXPECT_FALSE(flag_z());
+}
+
+TEST_F(CpuTest, ExtClearsOverflowFlag) {
+    load_program({
+        0x707FU, // MOVEQ #127, D0
+        0x5200U, // ADDQ.B #1, D0 (127 + 1 = 128 -> overflow V = 1)
+        0x4880U  // EXT.W D0
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // ADDQ.B
+    EXPECT_TRUE(flag_v());
+
+    cpu.step(bus);          // EXT.W
+    EXPECT_FALSE(flag_v()); // V cleared
+}
+
+class ExtRegisterSweepTest : public CpuTest,
+                             public ::testing::WithParamInterface<std::size_t> {
+};
+
+TEST_P(ExtRegisterSweepTest, ExtendsByteToWordAcrossAllDataRegisters) {
+    const std::size_t reg_index = GetParam();
+    const auto moveq_op = static_cast<std::uint16_t>(
+        0x702AU |
+        (static_cast<std::uint32_t>(reg_index) << 9U)); // MOVEQ #42, Dn
+    const auto ext_op = static_cast<std::uint16_t>(
+        0x4880U | static_cast<std::uint16_t>(reg_index)); // EXT.W Dn
+
+    load_program({moveq_op, ext_op});
+
+    cpu.step(bus); // MOVEQ
+    EXPECT_EQ(cpu.D(reg_index), 42U);
+
+    cpu.step(bus); // EXT.W
+    EXPECT_EQ(cpu.D(reg_index), 42U);
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+INSTANTIATE_TEST_SUITE_P(AllDataRegisters, ExtRegisterSweepTest,
+                         ::testing::Values(0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U),
+                         [](const ::testing::TestParamInfo<std::size_t> &info) {
+                             return std::format("D{}", info.param);
+                         });

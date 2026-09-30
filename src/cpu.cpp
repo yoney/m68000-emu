@@ -141,6 +141,12 @@ constexpr std::uint16_t pea_pattern = 0x4840U;
 constexpr std::uint16_t swap_mask = 0xFFF8U;
 constexpr std::uint16_t swap_pattern = 0x4840U;
 
+constexpr std::uint16_t ext_word_mask = 0xFFF8U;
+constexpr std::uint16_t ext_word_pattern = 0x4880U;
+
+constexpr std::uint16_t ext_long_mask = 0xFFF8U;
+constexpr std::uint16_t ext_long_pattern = 0x48C0U;
+
 [[nodiscard]] constexpr std::uint32_t
 add_displacement(std::uint32_t address, std::int32_t displacement) noexcept {
     return address + static_cast<std::uint32_t>(displacement);
@@ -273,6 +279,10 @@ void Cpu::step(Bus &bus) {
         return;
     } else if ((opcode & swap_mask) == swap_pattern) {
         execute_swap(opcode);
+        return;
+    } else if ((opcode & ext_word_mask) == ext_word_pattern ||
+               (opcode & ext_long_mask) == ext_long_pattern) {
+        execute_ext(opcode);
         return;
     }
 
@@ -622,6 +632,38 @@ void Cpu::execute_swap(std::uint16_t opcode) {
         status_ |= zero_flag;
     } else if ((D_[index] & 0x80000000U) != 0) {
         status_ |= negative_flag;
+    }
+}
+
+void Cpu::execute_ext(std::uint16_t opcode) {
+    const std::size_t index = opcode & 0x0007U;
+    const auto opmode = static_cast<std::uint8_t>((opcode >> 6U) & 0x0007U);
+
+    status_ &= static_cast<std::uint16_t>(~nzvc_flags);
+
+    if (opmode == 0b010U) { // EXT.W: byte -> word (bits 31-16 preserved)
+        const auto byte_val = static_cast<std::int8_t>(D_[index] & 0x00FFU);
+        const auto word_val = static_cast<std::int16_t>(byte_val);
+        D_[index] =
+            (D_[index] & 0xFFFF0000U) | static_cast<std::uint16_t>(word_val);
+
+        if (word_val == 0) {
+            status_ |= zero_flag;
+        } else if (word_val < 0) {
+            status_ |= negative_flag;
+        }
+    } else if (opmode == 0b011U) { // EXT.L: word -> long
+        const auto word_val = static_cast<std::int16_t>(D_[index] & 0xFFFFU);
+        const auto long_val = static_cast<std::int32_t>(word_val);
+        D_[index] = static_cast<std::uint32_t>(long_val);
+
+        if (long_val == 0) {
+            status_ |= zero_flag;
+        } else if (long_val < 0) {
+            status_ |= negative_flag;
+        }
+    } else {
+        throw UnsupportedInstruction{opcode};
     }
 }
 
