@@ -26,6 +26,10 @@ jobs:
             os: ubuntu-latest
             cpp_compiler: clang++
 
+          - name: Linux ARM64 GCC
+            os: ubuntu-24.04-arm
+            cpp_compiler: g++
+
           - name: macOS Apple Clang
             os: macos-latest
             cpp_compiler: clang++
