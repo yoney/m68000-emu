@@ -3146,3 +3146,236 @@ INSTANTIATE_TEST_SUITE_P(AllDataRegisters, ExtRegisterSweepTest,
                          [](const ::testing::TestParamInfo<std::size_t> &info) {
                              return std::format("D{}", info.param);
                          });
+
+struct NotRegisterParam {
+    const char *test_name;
+    std::size_t reg_index;
+    std::vector<std::uint16_t> setup_ops;
+    std::uint16_t not_opcode;
+    std::uint32_t expected_value;
+    bool expected_n;
+    bool expected_z;
+};
+
+class NotRegisterSizeTest
+    : public CpuTest,
+      public ::testing::WithParamInterface<NotRegisterParam> {};
+
+TEST_P(NotRegisterSizeTest, InvertsOperandAndUpdatesFlags) {
+    const auto &param = GetParam();
+    auto program = param.setup_ops;
+    program.push_back(param.not_opcode);
+    load_program(program);
+
+    for (std::size_t i = 0; i < param.setup_ops.size(); ++i) {
+        cpu.step(bus);
+    }
+    cpu.step(bus); // NOT
+
+    EXPECT_EQ(cpu.D(param.reg_index), param.expected_value);
+    EXPECT_EQ(flag_n(), param.expected_n);
+    EXPECT_EQ(flag_z(), param.expected_z);
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    OperandSizes, NotRegisterSizeTest,
+    ::testing::Values(
+        // Byte: Invert 0x08 -> 0xF7 (negative), preserve upper 24 bits
+        NotRegisterParam{"Byte_NegativeResult",
+                         0,
+                         {0x7012U, 0x4840U, 0x5000U}, // 0x00120008 in D0
+                         0x4600U,                     // NOT.B D0
+                         0x001200F7U,
+                         true,
+                         false},
+        // Byte: Invert 0xFF -> 0x00 (zero), preserve upper 24 bits
+        NotRegisterParam{"Byte_ZeroResult",
+                         0,
+                         {0x7012U, 0x4840U, 0x5300U}, // 0x001200FF in D0
+                         0x4600U,                     // NOT.B D0
+                         0x00120000U,
+                         false,
+                         true},
+        // Word: Invert 0x0000 -> 0xFFFF (negative), preserve upper 16 bits
+        NotRegisterParam{"Word_NegativeResult",
+                         1,
+                         {0x7212U, 0x4841U}, // 0x00120000 in D1
+                         0x4641U,            // NOT.W D1
+                         0x0012FFFFU,
+                         true,
+                         false},
+        // Word: Invert 0xFFFF -> 0x0000 (zero), preserve upper 16 bits
+        NotRegisterParam{"Word_ZeroResult",
+                         1,
+                         {0x7212U, 0x4841U, 0x5341U}, // 0x0012FFFF in D1
+                         0x4641U,                     // NOT.W D1
+                         0x00120000U,
+                         false,
+                         true},
+        // Long: Invert 0x00000000 -> 0xFFFFFFFF
+        NotRegisterParam{"Long_NegativeResult",
+                         2,
+                         {0x7400U}, // MOVEQ #0, D2
+                         0x4682U,   // NOT.L D2
+                         0xFFFFFFFFU,
+                         true,
+                         false},
+        // Long: Invert 0xFFFFFFFF -> 0x00000000
+        NotRegisterParam{"Long_ZeroResult",
+                         2,
+                         {0x74FFU}, // MOVEQ #-1, D2
+                         0x4682U,   // NOT.L D2
+                         0x00000000U,
+                         false,
+                         true}),
+    [](const ::testing::TestParamInfo<NotRegisterParam> &info) {
+        return info.param.test_name;
+    });
+
+TEST_F(CpuTest, NotPreservesExtendFlag) {
+    load_program({
+        0x7000U, // MOVEQ #0, D0
+        0x5380U, // SUBQ.L #1, D0 (0 - 1 = -1 -> borrow X = 1, C = 1)
+        0x4680U  // NOT.L D0
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SUBQ.L
+    EXPECT_TRUE(flag_x());
+    EXPECT_TRUE(flag_c());
+
+    cpu.step(bus);          // NOT.L
+    EXPECT_TRUE(flag_x());  // X preserved
+    EXPECT_FALSE(flag_c()); // C cleared
+    EXPECT_FALSE(flag_v()); // V cleared
+}
+
+TEST_F(CpuTest, NotByteMemoryIndirect) {
+    constexpr std::uint32_t target_address = 0x00000008U;
+    bus.poke8(target_address, 0x55U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4610U  // NOT.B (A0)
+    });
+
+    cpu.step(bus); // ADDQ.L #8, A0
+    cpu.step(bus); // NOT.B (A0)
+
+    EXPECT_EQ(bus.peek8(target_address), 0xAAU);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+TEST_F(CpuTest, NotWordPostIncrementInvertsMemoryAndAdvancesAddress) {
+    constexpr std::uint32_t target_address = 0x00000008U;
+    bus.poke16(target_address, 0x0000U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4658U  // NOT.W (A0)+
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // NOT.W (A0)+
+
+    EXPECT_EQ(bus.peek16(target_address), 0xFFFFU);
+    EXPECT_EQ(cpu.A(0), 10U);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+}
+
+TEST_F(CpuTest, NotPreDecrementDecrementsAddressAndInvertsMemory) {
+    constexpr std::uint32_t target_address = 0x00000006U;
+    bus.poke16(target_address, 0xFFFFU);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4660U  // NOT.W -(A0)
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // NOT.W -(A0)
+
+    EXPECT_EQ(bus.peek16(target_address), 0x0000U);
+    EXPECT_EQ(cpu.A(0), 6U);
+    EXPECT_TRUE(flag_z());
+    EXPECT_FALSE(flag_n());
+}
+
+TEST_F(CpuTest, NotDisplacementInvertsTargetMemory) {
+    constexpr std::uint32_t target_address = 0x0000000CU;
+    bus.poke8(target_address, 0xF0U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4628U, // NOT.B 4(A0)
+        0x0004U  // displacement +4
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // NOT.B 4(A0)
+
+    EXPECT_EQ(bus.peek8(target_address), 0x0FU);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_FALSE(flag_n());
+    EXPECT_FALSE(flag_z());
+}
+
+TEST_F(CpuTest, NotAddressRegisterDirectThrowsUnsupportedInstruction) {
+    load_program({
+        0x4648U // NOT.W A0 (mode 1 is illegal)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, NotProgramCounterDisplacementThrowsUnsupportedInstruction) {
+    load_program({
+        0x467AU, // NOT.W d16(PC) (mode 7, reg 2 is not alterable)
+        0x0004U  // displacement
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, NotImmediateThrowsUnsupportedInstruction) {
+    load_program({
+        0x467CU, // NOT.W #1 (mode 7, reg 4 is not alterable)
+        0x0001U  // immediate data
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+class NotRegisterSweepTest : public CpuTest,
+                             public ::testing::WithParamInterface<std::size_t> {
+};
+
+TEST_P(NotRegisterSweepTest, InvertsByteAcrossAllDataRegisters) {
+    const std::size_t reg_index = GetParam();
+    const auto moveq_op = static_cast<std::uint16_t>(
+        0x7000U | (static_cast<std::uint32_t>(reg_index) << 9U) |
+        0x55U); // MOVEQ #0x55, Dn
+    const auto not_op = static_cast<std::uint16_t>(
+        0x4600U | static_cast<std::uint16_t>(reg_index)); // NOT.B Dn
+
+    load_program({moveq_op, not_op});
+
+    cpu.step(bus); // MOVEQ
+    EXPECT_EQ(cpu.D(reg_index), 0x55U);
+
+    cpu.step(bus); // NOT.B
+    EXPECT_EQ(cpu.D(reg_index), 0xAAU);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_FALSE(flag_c());
+}
+
+INSTANTIATE_TEST_SUITE_P(AllDataRegisters, NotRegisterSweepTest,
+                         ::testing::Values(0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U),
+                         [](const ::testing::TestParamInfo<std::size_t> &info) {
+                             return std::format("D{}", info.param);
+                         });
