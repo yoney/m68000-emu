@@ -150,6 +150,9 @@ constexpr std::uint16_t ext_long_pattern = 0x48C0U;
 constexpr std::uint16_t not_mask = 0xFF00U;
 constexpr std::uint16_t not_pattern = 0x4600U;
 
+constexpr std::uint16_t neg_mask = 0xFF00U;
+constexpr std::uint16_t neg_pattern = 0x4400U;
+
 [[nodiscard]] constexpr std::uint32_t
 add_displacement(std::uint32_t address, std::int32_t displacement) noexcept {
     return address + static_cast<std::uint32_t>(displacement);
@@ -290,6 +293,10 @@ void Cpu::step(Bus &bus) {
     }
     if ((opcode & not_mask) == not_pattern && (opcode & 0x00C0U) != 0x00C0U) {
         execute_not(bus, opcode);
+        return;
+    }
+    if ((opcode & neg_mask) == neg_pattern && (opcode & 0x00C0U) != 0x00C0U) {
+        execute_neg(bus, opcode);
         return;
     }
     throw UnsupportedInstruction{opcode};
@@ -703,6 +710,45 @@ void Cpu::execute_not(Bus &bus, std::uint16_t opcode) {
         status_ |= zero_flag;
     } else if (result & msb) {
         status_ |= negative_flag;
+    }
+}
+
+void Cpu::execute_neg(Bus &bus, std::uint16_t opcode) {
+    std::uint8_t index = opcode & 0x0007U;
+    std::uint8_t mode = (opcode >> 3) & 0x0007U;
+    OperandSize size = decode_size((opcode >> 6) & 0x0003U);
+    std::uint32_t size_mask = get_size_mask(size);
+    std::uint32_t result{0};
+
+    if (mode == 0b001 || (mode == 0b111 && index > 1)) {
+        throw UnsupportedInstruction{opcode};
+    }
+
+    if (mode == 0b000) {
+        result = (0U - (D_[index] & size_mask)) & size_mask;
+        D_[index] = (D_[index] & ~size_mask) | result;
+    } else {
+        auto resolved = resolve_memory_address(bus, opcode, mode, index, size);
+        auto value = read_memory(bus, resolved.address, size);
+        result = (0U - (value & size_mask)) & size_mask;
+        write_memory(bus, resolved.address, size, result);
+        if (resolved.post_increment) {
+            A_[index] += resolved.post_increment;
+        }
+    }
+
+    std::uint32_t msb = (size_mask >> 1) + 1;
+    status_ &= static_cast<std::uint16_t>(~(nzvc_flags | extend_flag));
+    if (result == 0) {
+        status_ |= zero_flag;
+    } else {
+        status_ |= carry_flag | extend_flag;
+        if (result & msb) {
+            status_ |= negative_flag;
+        }
+    }
+    if (result == msb) {
+        status_ |= overflow_flag;
     }
 }
 

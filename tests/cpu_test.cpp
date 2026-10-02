@@ -3379,3 +3379,360 @@ INSTANTIATE_TEST_SUITE_P(AllDataRegisters, NotRegisterSweepTest,
                          [](const ::testing::TestParamInfo<std::size_t> &info) {
                              return std::format("D{}", info.param);
                          });
+
+struct NegRegisterParam {
+    const char *test_name;
+    std::size_t reg_index;
+    std::vector<std::uint16_t> setup_ops;
+    std::uint16_t neg_opcode;
+    std::uint32_t expected_value;
+    bool expected_x;
+    bool expected_n;
+    bool expected_z;
+    bool expected_v;
+    bool expected_c;
+};
+
+class NegRegisterSizeTest
+    : public CpuTest,
+      public ::testing::WithParamInterface<NegRegisterParam> {};
+
+TEST_P(NegRegisterSizeTest, NegatesOperandAndUpdatesFlags) {
+    const auto &param = GetParam();
+    auto program = param.setup_ops;
+    program.push_back(param.neg_opcode);
+    load_program(program);
+
+    for (std::size_t i = 0; i < param.setup_ops.size(); ++i) {
+        cpu.step(bus);
+    }
+    cpu.step(bus); // NEG
+
+    EXPECT_EQ(cpu.D(param.reg_index), param.expected_value);
+    EXPECT_EQ(flag_x(), param.expected_x);
+    EXPECT_EQ(flag_n(), param.expected_n);
+    EXPECT_EQ(flag_z(), param.expected_z);
+    EXPECT_EQ(flag_v(), param.expected_v);
+    EXPECT_EQ(flag_c(), param.expected_c);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    OperandSizes, NegRegisterSizeTest,
+    ::testing::Values(
+        // Byte: Negate 0x00 -> 0x00 (zero, X=C=0), preserve upper 24 bits
+        NegRegisterParam{"Byte_Zero",
+                         0,
+                         {0x7012U, 0x4840U}, // 0x00120000 in D0
+                         0x4400U,            // NEG.B D0
+                         0x00120000U,
+                         false,
+                         false,
+                         true,
+                         false,
+                         false},
+        // Byte: Negate +1 (0x01) -> -1 (0xFF, negative, X=C=1), preserve upper
+        // 24 bits
+        NegRegisterParam{"Byte_PositiveToNegative",
+                         0,
+                         {0x7012U, 0x4840U, 0x5200U}, // 0x00120001 in D0
+                         0x4400U,                     // NEG.B D0
+                         0x001200FFU,
+                         true,
+                         true,
+                         false,
+                         false,
+                         true},
+        // Byte: Negate -1 (0xFF) -> +1 (0x01, positive, X=C=1), preserve upper
+        // 24 bits
+        NegRegisterParam{"Byte_NegativeToPositive",
+                         0,
+                         {0x7012U, 0x4840U, 0x5300U}, // 0x001200FF in D0
+                         0x4400U,                     // NEG.B D0
+                         0x00120001U,
+                         true,
+                         false,
+                         false,
+                         false,
+                         true},
+        // Byte: Negate -128 (0x80) -> -128 (0x80, overflow V=1, N=1, X=C=1)
+        NegRegisterParam{"Byte_Overflow_MinNegative",
+                         0,
+                         {0x7080U}, // MOVEQ #-128, D0 -> 0xFFFFFF80
+                         0x4400U,   // NEG.B D0
+                         0xFFFFFF80U,
+                         true,
+                         true,
+                         false,
+                         true,
+                         true},
+        // Word: Negate 0x0000 -> 0x0000 (zero, X=C=0), preserve upper 16 bits
+        NegRegisterParam{"Word_Zero",
+                         1,
+                         {0x7212U, 0x4841U}, // 0x00120000 in D1
+                         0x4441U,            // NEG.W D1
+                         0x00120000U,
+                         false,
+                         false,
+                         true,
+                         false,
+                         false},
+        // Word: Negate +2 (0x0002) -> -2 (0xFFFE, negative, X=C=1), preserve
+        // upper 16 bits
+        NegRegisterParam{"Word_PositiveToNegative",
+                         1,
+                         {0x7212U, 0x4841U, 0x5441U}, // 0x00120002 in D1
+                         0x4441U,                     // NEG.W D1
+                         0x0012FFFEU,
+                         true,
+                         true,
+                         false,
+                         false,
+                         true},
+        // Word: Negate -1 (0xFFFF) -> +1 (0x0001, positive, X=C=1), preserve
+        // upper 16 bits
+        NegRegisterParam{"Word_NegativeToPositive",
+                         1,
+                         {0x72FFU}, // MOVEQ #-1, D1 -> 0xFFFFFFFF
+                         0x4441U,   // NEG.W D1
+                         0xFFFF0001U,
+                         true,
+                         false,
+                         false,
+                         false,
+                         true},
+        // Long: Negate 0 -> 0 (zero, X=C=0)
+        NegRegisterParam{"Long_Zero",
+                         2,
+                         {0x7400U}, // MOVEQ #0, D2
+                         0x4482U,   // NEG.L D2
+                         0x00000000U,
+                         false,
+                         false,
+                         true,
+                         false,
+                         false},
+        // Long: Negate +1 -> -1 (negative, X=C=1)
+        NegRegisterParam{"Long_PositiveToNegative",
+                         2,
+                         {0x7401U}, // MOVEQ #1, D2
+                         0x4482U,   // NEG.L D2
+                         0xFFFFFFFFU,
+                         true,
+                         true,
+                         false,
+                         false,
+                         true},
+        // Long: Negate -1 -> +1 (positive, X=C=1)
+        NegRegisterParam{"Long_NegativeToPositive",
+                         2,
+                         {0x74FFU}, // MOVEQ #-1, D2
+                         0x4482U,   // NEG.L D2
+                         0x00000001U,
+                         true,
+                         false,
+                         false,
+                         false,
+                         true}),
+    [](const ::testing::TestParamInfo<NegRegisterParam> &info) {
+        return info.param.test_name;
+    });
+
+TEST_F(CpuTest, NegUpdatesExtendFlag) {
+    load_program({
+        // 1) Setup X=1 by subtracting 1 from 0 (borrow sets X and C)
+        0x7000U, // MOVEQ #0, D0
+        0x5380U, // SUBQ.L #1, D0 -> sets X=1, C=1
+        0x7000U, // MOVEQ #0, D0 (preserves X=1)
+        0x4480U, // NEG.L D0 (0 - 0 = 0 -> clears X and C)
+        // 2) Negating non-zero sets X to 1
+        0x7001U, // MOVEQ #1, D0 (preserves X=0)
+        0x4480U  // NEG.L D0 (0 - 1 = -1 -> sets X and C)
+    });
+
+    cpu.step(bus); // MOVEQ
+    cpu.step(bus); // SUBQ
+    EXPECT_TRUE(flag_x());
+    cpu.step(bus); // MOVEQ
+    EXPECT_TRUE(flag_x());
+
+    cpu.step(bus);          // NEG.L D0
+    EXPECT_FALSE(flag_x()); // X must be cleared because C=0
+    EXPECT_FALSE(flag_c());
+    EXPECT_TRUE(flag_z());
+
+    cpu.step(bus); // MOVEQ
+    EXPECT_FALSE(flag_x());
+
+    cpu.step(bus);         // NEG.L
+    EXPECT_TRUE(flag_x()); // X must be set because C=1
+    EXPECT_TRUE(flag_c());
+}
+
+TEST_F(CpuTest, NegWordOverflowMinNegative) {
+    constexpr std::uint32_t target_address = 0x00000008U;
+    bus.poke16(target_address, 0x8000U); // -32768
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4450U  // NEG.W (A0)
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // NEG.W
+
+    EXPECT_EQ(bus.peek16(target_address), 0x8000U);
+    EXPECT_TRUE(flag_v());
+    EXPECT_TRUE(flag_c());
+    EXPECT_TRUE(flag_x());
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+}
+
+TEST_F(CpuTest, NegLongOverflowMinNegative) {
+    constexpr std::uint32_t target_address = 0x00000008U;
+    bus.poke32(target_address, 0x80000000U); // -2147483648
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x5888U, // ADDQ.L #4, A0 (A0 = 12)
+        0x44A0U  // NEG.L -(A0) (A0 decrements to 8)
+    });
+
+    cpu.step(bus); // ADDQ.L #8
+    cpu.step(bus); // ADDQ.L #4
+    cpu.step(bus); // NEG.L -(A0)
+
+    EXPECT_EQ(bus.peek16(target_address), 0x8000U);
+    EXPECT_EQ(bus.peek16(target_address + 2U), 0x0000U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_TRUE(flag_v());
+    EXPECT_TRUE(flag_c());
+    EXPECT_TRUE(flag_x());
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+}
+
+TEST_F(CpuTest, NegByteMemoryIndirect) {
+    constexpr std::uint32_t target_address = 0x00000008U;
+    bus.poke8(target_address, 0x01U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4410U  // NEG.B (A0)
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // NEG.B (A0)
+
+    EXPECT_EQ(bus.peek8(target_address), 0xFFU);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_TRUE(flag_c());
+    EXPECT_TRUE(flag_x());
+}
+
+TEST_F(CpuTest, NegWordPostIncrementAdvancesAddress) {
+    constexpr std::uint32_t target_address = 0x00000008U;
+    bus.poke16(target_address, 0x0005U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4458U  // NEG.W (A0)+
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // NEG.W (A0)+
+
+    EXPECT_EQ(bus.peek16(target_address), 0xFFFBU);
+    EXPECT_EQ(cpu.A(0), 10U);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_TRUE(flag_c());
+    EXPECT_TRUE(flag_x());
+}
+
+TEST_F(CpuTest, NegDisplacementTargetMemory) {
+    constexpr std::uint32_t target_address = 0x0000000CU;
+    bus.poke8(target_address, 0x10U);
+    load_program({
+        0x5088U, // ADDQ.L #8, A0
+        0x4428U, // NEG.B 4(A0)
+        0x0004U  // displacement +4
+    });
+
+    cpu.step(bus); // ADDQ.L
+    cpu.step(bus); // NEG.B 4(A0)
+
+    EXPECT_EQ(bus.peek8(target_address), 0xF0U);
+    EXPECT_EQ(cpu.A(0), 8U);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_TRUE(flag_c());
+    EXPECT_TRUE(flag_x());
+}
+
+TEST_F(CpuTest, NegAddressRegisterDirectThrowsUnsupportedInstruction) {
+    load_program({
+        0x4448U // NEG.W A0 (mode 1 is illegal)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, NegProgramCounterDisplacementThrowsUnsupportedInstruction) {
+    load_program({
+        0x447AU, // NEG.W d16(PC) (mode 7, reg 2 is not alterable)
+        0x0004U  // displacement
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, NegImmediateThrowsUnsupportedInstruction) {
+    load_program({
+        0x447CU, // NEG.W #1 (mode 7, reg 4 is not alterable)
+        0x0001U  // immediate data
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+TEST_F(CpuTest, NegSize11ThrowsUnsupportedInstruction) {
+    load_program({
+        0x44C0U // MOVE to CCR pattern (size 11 is not NEG)
+    });
+
+    EXPECT_THROW(cpu.step(bus), m68000::UnsupportedInstruction);
+}
+
+class NegRegisterSweepTest : public CpuTest,
+                             public ::testing::WithParamInterface<std::size_t> {
+};
+
+TEST_P(NegRegisterSweepTest, NegatesByteAcrossAllDataRegisters) {
+    const std::size_t reg_index = GetParam();
+    const auto moveq_op = static_cast<std::uint16_t>(
+        0x7000U | (static_cast<std::uint32_t>(reg_index) << 9U) |
+        0x55U); // MOVEQ #0x55, Dn
+    const auto neg_op = static_cast<std::uint16_t>(
+        0x4400U | static_cast<std::uint16_t>(reg_index)); // NEG.B Dn
+
+    load_program({moveq_op, neg_op});
+
+    cpu.step(bus); // MOVEQ
+    EXPECT_EQ(cpu.D(reg_index), 0x55U);
+
+    cpu.step(bus); // NEG.B
+    EXPECT_EQ(cpu.D(reg_index), 0x000000ABU);
+    EXPECT_TRUE(flag_n());
+    EXPECT_FALSE(flag_z());
+    EXPECT_FALSE(flag_v());
+    EXPECT_TRUE(flag_c());
+    EXPECT_TRUE(flag_x());
+}
+
+INSTANTIATE_TEST_SUITE_P(AllDataRegisters, NegRegisterSweepTest,
+                         ::testing::Values(0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U),
+                         [](const ::testing::TestParamInfo<std::size_t> &info) {
+                             return std::format("D{}", info.param);
+                         });
